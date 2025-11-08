@@ -16,6 +16,7 @@ static const char *MAGIC_KEYWORDS[] = {
     "malicious",
     "ossec",
     "hide_process",
+    "/etc/ld.so.preload",
     NULL  // Sentinel to mark end of array
 };
 
