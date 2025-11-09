@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <hide_process.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
