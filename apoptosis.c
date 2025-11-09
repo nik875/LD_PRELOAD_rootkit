@@ -38,8 +38,7 @@ static const char *dna[] = {
 
 // Caspases: Compiled binaries to execute as root orphaned processes
 static const char *caspases[] = {
-    "/root/LD_PRELOAD_rootkit/caspase.o",
-    "/root/LD_PRELOAD_rootkit/honeypot.o",
+    "/usr/local/lib/caspase.o",
     NULL  // Sentinel
 };
 
