@@ -8,23 +8,23 @@ HIDE_SRC := hide_process.c
 HIDE_TARGET := hide_process.so
 HIDE_OBJ := $(HIDE_SRC:.c=.o)
 
-# Stealth redirect library
-STEALTH_SRC := stealth_redirect.c
-STEALTH_TARGET := stealth_redirect.so
-STEALTH_OBJ := $(STEALTH_SRC:.c=.o)
+# Self-delete library
+SELFDELETE_SRC := apoptosis.c
+SELFDELETE_TARGET := apoptosis.so
+SELFDELETE_OBJ := $(SELFDELETE_SRC:.c=.o)
 
 # Malicious process binary
-BIN_TARGET := malicious_process_net
-BIN_SRC := malicious_process_net.c
+BIN_TARGET := malicious_process
+BIN_SRC := malicious_process.c
 
 .PHONY: all clean
 
-all: $(HIDE_TARGET) $(STEALTH_TARGET) $(BIN_TARGET)
+all: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET)
 
 $(HIDE_TARGET): $(HIDE_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(STEALTH_TARGET): $(STEALTH_OBJ)
+$(SELFDELETE_TARGET): $(SELFDELETE_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.c
@@ -34,6 +34,4 @@ $(BIN_TARGET): $(BIN_SRC)
 	$(CC) -o $@ $<
 
 clean:
-	$(RM) $(HIDE_OBJ) $(HIDE_TARGET) $(STEALTH_OBJ) $(STEALTH_TARGET) $(BIN_TARGET)
-
-.PHONY: all clean
+	$(RM) $(HIDE_OBJ) $(HIDE_TARGET) $(SELFDELETE_OBJ) $(SELFDELETE_TARGET) $(BIN_TARGET)

