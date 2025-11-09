@@ -32,7 +32,6 @@ static const char *dna[] = {
     "/usr/local/lib/mhc_downreg.so",
     "/usr/local/lib/apoptosis.so",
     "/etc/ld.so.preload",
-    "/root/LD_PRELOAD_rootkit",
     NULL  // Sentinel
 };
 
