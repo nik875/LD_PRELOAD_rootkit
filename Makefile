@@ -3,6 +3,13 @@ CFLAGS ?= -fPIC -O2 -Wall -Wextra
 LDFLAGS ?= -shared
 LDLIBS ?= -ldl -pthread
 
+# Debug flag - set DEBUG=1 to enable debug output
+ifdef DEBUG
+    CFLAGS += -DDEBUG_MODE=1
+else
+    CFLAGS += -DDEBUG_MODE=0
+endif
+
 # Installation paths
 LIBDIR := /usr/local/lib
 PRELOAD_FILE := /etc/ld.so.preload
