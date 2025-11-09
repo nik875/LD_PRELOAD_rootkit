@@ -17,6 +17,7 @@ static const char *MAGIC_KEYWORDS[] = {
     "ossec",
     "mhc_downreg",
     "wazuh",
+    "caspase",
     "/etc/ld.so.preload",
     NULL  // Sentinel to mark end of array
 };
