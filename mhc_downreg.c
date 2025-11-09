@@ -15,7 +15,8 @@
 static const char *MAGIC_KEYWORDS[] = {
     "apoptosis",
     "ossec",
-    "hide_process",
+    "mhc_downreg",
+    "wazuh",
     "/etc/ld.so.preload",
     NULL  // Sentinel to mark end of array
 };

