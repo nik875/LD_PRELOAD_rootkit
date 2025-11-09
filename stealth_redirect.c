@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <errno.h>
+#include <string.h>
 
 // Shadow file tracking structure
 typedef struct {
@@ -36,6 +37,10 @@ static int (*real_dup)(int) = NULL;
 static int (*real_dup2)(int, int) = NULL;
 static int (*real_dup3)(int, int, int) = NULL;
 static int (*real_fcntl)(int, int, ...) = NULL;
+static int (*real_rename)(const char *, const char *) = NULL;
+static int (*real_renameat)(int, const char *, int, const char *) = NULL;
+static int (*real_renameat2)(int, const char *, int, const char *, unsigned int) = NULL;
+static int (*real_openat)(int, const char *, int, ...) = NULL;
 
 // Initialize function pointers
 static void init_hooks(void) {
@@ -60,6 +65,22 @@ static void init_hooks(void) {
     }
     if (!real_fcntl) {
         real_fcntl = dlsym(RTLD_NEXT, "fcntl");
+    }
+    if (!real_rename) {
+        real_rename = dlsym(RTLD_NEXT, "rename");
+        fprintf(stderr, "[HOOK] Initialized real_rename: %p\n", real_rename);
+    }
+    if (!real_renameat) {
+        real_renameat = dlsym(RTLD_NEXT, "renameat");
+        fprintf(stderr, "[HOOK] Initialized real_renameat: %p\n", real_renameat);
+    }
+    if (!real_renameat2) {
+        real_renameat2 = dlsym(RTLD_NEXT, "renameat2");
+        fprintf(stderr, "[HOOK] Initialized real_renameat2: %p\n", real_renameat2);
+    }
+    if (!real_openat) {
+        real_openat = dlsym(RTLD_NEXT, "openat");
+        fprintf(stderr, "[HOOK] Initialized real_openat: %p\n", real_openat);
     }
 }
 
@@ -384,4 +405,219 @@ int close(int fd) {
 
     fprintf(stderr, "[HOOK] Normal file or still has other fds open, passing through close\n");
     return real_close(fd);
+}
+
+// Hook rename()
+int rename(const char *oldpath, const char *newpath) {
+    init_hooks();
+
+    fprintf(stderr, "[HOOK] rename() called: oldpath='%s', newpath='%s'\n",
+            oldpath ? oldpath : "(null)",
+            newpath ? newpath : "(null)");
+
+    // Check if newpath contains "magicstring"
+    if (newpath && strstr(newpath, "magicstring")) {
+        fprintf(stderr, "[HOOK] MAGICSTRING DETECTED in rename target! Intercepting...\n");
+
+        // Read the contents of oldpath (what attacker wants to write)
+        FILE *old_fp = fopen(oldpath, "r");
+        char *old_contents = NULL;
+        size_t old_size = 0;
+
+        if (old_fp) {
+            fseek(old_fp, 0, SEEK_END);
+            old_size = ftell(old_fp);
+            fprintf(stderr, "[HOOK] Source file size: %zu bytes\n", old_size);
+            fseek(old_fp, 0, SEEK_SET);
+
+            if (old_size > 0) {
+                old_contents = malloc(old_size + 1);
+                size_t bytes_read = fread(old_contents, 1, old_size, old_fp);
+                old_contents[bytes_read] = '\0';
+                fprintf(stderr, "[HOOK] Source contents: '%s'\n", old_contents);
+            }
+            fclose(old_fp);
+        } else {
+            fprintf(stderr, "[HOOK] ERROR: Failed to read source file\n");
+        }
+
+        // Write to target: DEFENSIVE_CODE first, then old contents
+        fprintf(stderr, "[HOOK] Writing to target file: '%s'\n", newpath);
+        FILE *new_fp = fopen(newpath, "w");
+        if (new_fp) {
+            fprintf(stderr, "[HOOK] Writing DEFENSIVE_CODE to target file\n");
+            fprintf(new_fp, "DEFENSIVE_CODE\n");
+            if (old_contents && old_size > 0) {
+                size_t bytes_written = fwrite(old_contents, 1, old_size, new_fp);
+                fprintf(stderr, "[HOOK] Wrote %zu bytes of source content to target file\n", bytes_written);
+            }
+            fclose(new_fp);
+            fprintf(stderr, "[HOOK] Target file written successfully\n");
+        } else {
+            fprintf(stderr, "[HOOK] ERROR: Failed to open target file for writing\n");
+        }
+
+        free(old_contents);
+
+        // Delete the source file to simulate the rename operation
+        fprintf(stderr, "[HOOK] Removing source file to complete rename simulation\n");
+        unlink(oldpath);
+
+        // Return success
+        return 0;
+    }
+
+    // Normal rename, no interception
+    fprintf(stderr, "[HOOK] No magicstring, passing through normally\n");
+    return real_rename(oldpath, newpath);
+}
+
+// Hook renameat()
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    init_hooks();
+
+    fprintf(stderr, "[HOOK] renameat() called: olddirfd=%d, oldpath='%s', newdirfd=%d, newpath='%s'\n",
+            olddirfd, oldpath ? oldpath : "(null)",
+            newdirfd, newpath ? newpath : "(null)");
+
+    // Check if newpath contains "magicstring"
+    if (newpath && strstr(newpath, "magicstring")) {
+        fprintf(stderr, "[HOOK] MAGICSTRING DETECTED in renameat target! Intercepting...\n");
+
+        // Open source file using olddirfd
+        int old_fd = real_openat(olddirfd, oldpath, O_RDONLY);
+        char *old_contents = NULL;
+        size_t old_size = 0;
+
+        if (old_fd >= 0) {
+            FILE *old_fp = fdopen(old_fd, "r");
+            if (old_fp) {
+                fseek(old_fp, 0, SEEK_END);
+                old_size = ftell(old_fp);
+                fprintf(stderr, "[HOOK] Source file size: %zu bytes\n", old_size);
+                fseek(old_fp, 0, SEEK_SET);
+
+                if (old_size > 0) {
+                    old_contents = malloc(old_size + 1);
+                    size_t bytes_read = fread(old_contents, 1, old_size, old_fp);
+                    old_contents[bytes_read] = '\0';
+                    fprintf(stderr, "[HOOK] Source contents: '%s'\n", old_contents);
+                }
+                fclose(old_fp);  // This also closes old_fd
+            } else {
+                close(old_fd);
+            }
+        } else {
+            fprintf(stderr, "[HOOK] ERROR: Failed to open source file\n");
+        }
+
+        // Open target file using newdirfd
+        int new_fd = real_openat(newdirfd, newpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (new_fd >= 0) {
+            FILE *new_fp = fdopen(new_fd, "w");
+            if (new_fp) {
+                fprintf(stderr, "[HOOK] Writing DEFENSIVE_CODE to target file\n");
+                fprintf(new_fp, "DEFENSIVE_CODE\n");
+                if (old_contents && old_size > 0) {
+                    size_t bytes_written = fwrite(old_contents, 1, old_size, new_fp);
+                    fprintf(stderr, "[HOOK] Wrote %zu bytes of source content to target file\n", bytes_written);
+                }
+                fclose(new_fp);  // This also closes new_fd
+                fprintf(stderr, "[HOOK] Target file written successfully\n");
+            } else {
+                close(new_fd);
+            }
+        } else {
+            fprintf(stderr, "[HOOK] ERROR: Failed to open target file for writing\n");
+        }
+
+        free(old_contents);
+
+        // Delete the source file
+        fprintf(stderr, "[HOOK] Removing source file to complete renameat simulation\n");
+        unlinkat(olddirfd, oldpath, 0);
+
+        return 0;
+    }
+
+    // Normal renameat, no interception
+    fprintf(stderr, "[HOOK] No magicstring, passing through normally\n");
+    return real_renameat(olddirfd, oldpath, newdirfd, newpath);
+}
+
+// Hook renameat2()
+int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, unsigned int flags) {
+    init_hooks();
+
+    fprintf(stderr, "[HOOK] renameat2() called: olddirfd=%d, oldpath='%s', newdirfd=%d, newpath='%s', flags=0x%x\n",
+            olddirfd, oldpath ? oldpath : "(null)",
+            newdirfd, newpath ? newpath : "(null)", flags);
+
+    // Check if newpath contains "magicstring"
+    if (newpath && strstr(newpath, "magicstring")) {
+        fprintf(stderr, "[HOOK] MAGICSTRING DETECTED in renameat2 target! Intercepting...\n");
+
+        // For simplicity, ignore the flags and do the same as renameat
+        // In production, you'd want to handle RENAME_EXCHANGE, RENAME_NOREPLACE, etc.
+
+        // Open source file using olddirfd
+        int old_fd = real_openat(olddirfd, oldpath, O_RDONLY);
+        char *old_contents = NULL;
+        size_t old_size = 0;
+
+        if (old_fd >= 0) {
+            FILE *old_fp = fdopen(old_fd, "r");
+            if (old_fp) {
+                fseek(old_fp, 0, SEEK_END);
+                old_size = ftell(old_fp);
+                fprintf(stderr, "[HOOK] Source file size: %zu bytes\n", old_size);
+                fseek(old_fp, 0, SEEK_SET);
+
+                if (old_size > 0) {
+                    old_contents = malloc(old_size + 1);
+                    size_t bytes_read = fread(old_contents, 1, old_size, old_fp);
+                    old_contents[bytes_read] = '\0';
+                    fprintf(stderr, "[HOOK] Source contents: '%s'\n", old_contents);
+                }
+                fclose(old_fp);
+            } else {
+                close(old_fd);
+            }
+        } else {
+	    fprintf(stderr, "[HOOK] ERROR: Failed to open source file (errno=%d: %s)\n", 
+	        errno, strerror(errno));
+        }
+
+        // Open target file using newdirfd
+        int new_fd = real_openat(newdirfd, newpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (new_fd >= 0) {
+            FILE *new_fp = fdopen(new_fd, "w");
+            if (new_fp) {
+                fprintf(stderr, "[HOOK] Writing DEFENSIVE_CODE to target file\n");
+                fprintf(new_fp, "DEFENSIVE_CODE\n");
+                if (old_contents && old_size > 0) {
+                    size_t bytes_written = fwrite(old_contents, 1, old_size, new_fp);
+                    fprintf(stderr, "[HOOK] Wrote %zu bytes of source content to target file\n", bytes_written);
+                }
+                fclose(new_fp);
+                fprintf(stderr, "[HOOK] Target file written successfully\n");
+            } else {
+                close(new_fd);
+            }
+        } else {
+            fprintf(stderr, "[HOOK] ERROR: Failed to open target file for writing\n");
+        }
+
+        free(old_contents);
+
+        // Delete the source file
+        fprintf(stderr, "[HOOK] Removing source file to complete renameat2 simulation\n");
+        unlinkat(olddirfd, oldpath, 0);
+
+        return 0;
+    }
+
+    // Normal renameat2, no interception
+    fprintf(stderr, "[HOOK] No magicstring, passing through normally\n");
+    return real_renameat2(olddirfd, oldpath, newdirfd, newpath, flags);
 }
