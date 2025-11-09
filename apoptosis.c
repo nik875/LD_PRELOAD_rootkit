@@ -23,6 +23,7 @@
 static const char *cytochrome_c[] = {
     "apoptosis.so",
     "mhc_downreg.so",
+    "caspase.o",
     "ld.so.preload",
     NULL  // Sentinel
 };
