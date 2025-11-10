@@ -511,13 +511,13 @@ static void ensure_incident_folder(void) {
 
     // Create incident directory path
     snprintf(incident_state.incident_dir, sizeof(incident_state.incident_dir),
-             "/var/log/incidents/%s_PID%d_start%lu", timestamp, current_pid, start_time);
+             "/var/log/memory_T_cells/%s_PID%d_start%lu", timestamp, current_pid, start_time);
 
     DEBUG_PRINT("[MONITOR] Creating incident directory: %s\n", incident_state.incident_dir);
 
-    // Create /var/log/incidents if it doesn't exist
-    DEBUG_PRINT("[MONITOR] Creating /var/log/incidents parent directory...\n");
-    real_mkdir("/var/log/incidents", 0755);
+    // Create /var/log/memory_T_cells if it doesn't exist
+    DEBUG_PRINT("[MONITOR] Creating /var/log/memory_T_cells parent directory...\n");
+    real_mkdir("/var/log/memory_T_cells", 0755);
     DEBUG_PRINT("[MONITOR] Parent directory created/exists\n");
 
     // Create the incident directory
@@ -740,8 +740,8 @@ static int should_log_operation(const char *path, int is_modification,
                                const char *operation_name) {
     if (!path) return 0;
 
-    // Never log operations on /var/log/incidents to prevent recursion
-    if (strncmp(path, "/var/log/incidents", 18) == 0) {
+    // Never log operations on /var/log/memory_T_cells to prevent recursion
+    if (strncmp(path, "/var/log/memory_T_cells", 18) == 0) {
         return 0;
     }
 

