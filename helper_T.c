@@ -508,10 +508,39 @@ static void ensure_incident_folder(void) {
              tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, tv.tv_usec);
     DEBUG_PRINT("[MONITOR] Timestamp: %s\n", timestamp);
-
-    // Create incident directory path
+    
+    // Get process executable name
+    char exe_name[256] = "unknown";
+    char exe_link[64];
+    char exe_path[PATH_MAX];
+    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", current_pid);
+    ssize_t len = real_readlink(exe_link, exe_path, sizeof(exe_path) - 1);
+    if (len > 0) {
+        exe_path[len] = '\0';
+        // Extract just the filename from the path
+        char *basename_ptr = strrchr(exe_path, '/');
+        if (basename_ptr) {
+            snprintf(exe_name, sizeof(exe_name), "%s", basename_ptr + 1);
+        } else {
+            snprintf(exe_name, sizeof(exe_name), "%s", exe_path);
+        }
+    
+        // Sanitize exe_name: replace spaces and special chars with underscores
+        for (int i = 0; exe_name[i] != '\0'; i++) {
+            if (exe_name[i] == ' ' || exe_name[i] == '/' || exe_name[i] == '\\' ||
+                exe_name[i] == ':' || exe_name[i] == '*' || exe_name[i] == '?' ||
+                exe_name[i] == '"' || exe_name[i] == '<' || exe_name[i] == '>' ||
+                exe_name[i] == '|') {
+                exe_name[i] = '_';
+            }
+        }
+    }
+    DEBUG_PRINT("[MONITOR] Executable name: %s\n", exe_name);
+    
+    // Create incident directory path with exe name before PID
     snprintf(incident_state.incident_dir, sizeof(incident_state.incident_dir),
-             "/var/log/memory_T_cells/%s_PID%d_start%lu", timestamp, current_pid, start_time);
+             "/var/log/memory_T_cells/%s_%s_PID%d_start%lu",
+             timestamp, exe_name, current_pid, start_time);
 
     DEBUG_PRINT("[MONITOR] Creating incident directory: %s\n", incident_state.incident_dir);
 
