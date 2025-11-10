@@ -1,7 +1,1 @@
-conceals wazuh agent process & config files, as well as self. alterations to rootkit files (/etc/ld.so.preload, /usr/local/lib compiled binaries) triggers immediate deletion of rootkit and wazuh-agent.
-
-designed for minimal impact, we can still cd into hidden directories and alter hidden files; the hope is that red team won't try that because they won't know wazuh is even there. realistically they'd only find out when they try inserting their own LD_PRELOAD rootkit, hence apoptosis so they don't find out we did the same.
-
-we'd have to come up with another way of concealing the network traffic and hiding the dashboard website. i have thoughts on this.
-
-run "make install" to compile & insert everything (build-essential, glibc required). tested only on aarch64 ubuntu.
+Defensive LD_PRELOAD rootkit that conceals wazuh-agent and silently monitors unauthorized filesystem alterations from inside attacker-controlled processes. Main priority is stealth. Upon attempted access of rootkit files or /etc/ld.so.preload, "apoptosis" is triggered and both the rootkit and wazuh-agent are cleanly deleted. It's more important to conceal the fact that we've done this than fight red team; the incident reports should reveal what process triggered the Cytochrome C tripwire and help a human admin identify red team's persistence and C2.
