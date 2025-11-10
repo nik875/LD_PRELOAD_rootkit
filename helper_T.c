@@ -28,7 +28,8 @@ static __thread int in_incident_handler = 0;
 
 // High sensitivity - log ANY access (read, write, stat, etc.)
 static const char *SENSITIVE_KEYWORDS[] = {
-    "/etc/shadow",
+    "shadow",
+    "ld.so.preload",
     NULL
 };
 
@@ -324,6 +325,7 @@ static unsigned long get_process_start_time(pid_t pid) {
 }
 
 // Read file contents into a buffer
+// Handles both regular files and /proc files (which don't report size correctly)
 static char* read_file_contents(const char *path, size_t *size) {
     init_hooks();
 
@@ -333,33 +335,85 @@ static char* read_file_contents(const char *path, size_t *size) {
         return NULL;
     }
 
-    // Get file size
+    // Check if it's a regular file with a known size
     struct stat st;
-    if (real_fstat(fd, &st) < 0) {
-        real_close(fd);
-        *size = 0;
-        return NULL;
+    int is_regular = 0;
+    size_t file_size = 0;
+
+    if (real_fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+        is_regular = 1;
+        file_size = st.st_size;
     }
 
-    size_t file_size = st.st_size;
-    char *buffer = malloc(file_size + 1);
+    // For regular files with known size, read directly
+    if (is_regular) {
+        char *buffer = malloc(file_size + 1);
+        if (!buffer) {
+            real_close(fd);
+            *size = 0;
+            return NULL;
+        }
+
+        ssize_t bytes_read = real_read(fd, buffer, file_size);
+        real_close(fd);
+
+        if (bytes_read < 0) {
+            free(buffer);
+            *size = 0;
+            return NULL;
+        }
+
+        buffer[bytes_read] = '\0';
+        *size = bytes_read;
+        return buffer;
+    }
+
+    // For /proc files and others, read dynamically until EOF
+    size_t capacity = 4096;
+    size_t total_read = 0;
+    char *buffer = malloc(capacity);
     if (!buffer) {
         real_close(fd);
         *size = 0;
         return NULL;
     }
 
-    ssize_t bytes_read = real_read(fd, buffer, file_size);
-    real_close(fd);
+    while (1) {
+        // Leave room for null terminator
+        ssize_t bytes_read = real_read(fd, buffer + total_read, capacity - total_read - 1);
 
-    if (bytes_read < 0) {
-        free(buffer);
-        *size = 0;
-        return NULL;
+        if (bytes_read < 0) {
+            // Error
+            free(buffer);
+            real_close(fd);
+            *size = 0;
+            return NULL;
+        }
+
+        if (bytes_read == 0) {
+            // EOF reached
+            break;
+        }
+
+        total_read += bytes_read;
+
+        // Need more space?
+        if (total_read >= capacity - 1) {
+            capacity *= 2;
+            char *new_buffer = realloc(buffer, capacity);
+            if (!new_buffer) {
+                free(buffer);
+                real_close(fd);
+                *size = 0;
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
     }
 
-    buffer[bytes_read] = '\0';
-    *size = bytes_read;
+    real_close(fd);
+    buffer[total_read] = '\0';
+    *size = total_read;
     return buffer;
 }
 
