@@ -509,12 +509,14 @@ static void ensure_incident_folder(void) {
              tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, tv.tv_usec);
     DEBUG_PRINT("[MONITOR] Timestamp: %s\n", timestamp);
     
-    // Get process executable name
+    // Get process executable name (declare variables here, use later too)
     char exe_name[256] = "unknown";
     char exe_link[64];
     char exe_path[PATH_MAX];
+    ssize_t len;
+    
     snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", current_pid);
-    ssize_t len = real_readlink(exe_link, exe_path, sizeof(exe_path) - 1);
+    len = real_readlink(exe_link, exe_path, sizeof(exe_path) - 1);
     if (len > 0) {
         exe_path[len] = '\0';
         // Extract just the filename from the path
@@ -524,10 +526,10 @@ static void ensure_incident_folder(void) {
         } else {
             snprintf(exe_name, sizeof(exe_name), "%s", exe_path);
         }
-    
+        
         // Sanitize exe_name: replace spaces and special chars with underscores
         for (int i = 0; exe_name[i] != '\0'; i++) {
-            if (exe_name[i] == ' ' || exe_name[i] == '/' || exe_name[i] == '\\' ||
+            if (exe_name[i] == ' ' || exe_name[i] == '/' || exe_name[i] == '\\' || 
                 exe_name[i] == ':' || exe_name[i] == '*' || exe_name[i] == '?' ||
                 exe_name[i] == '"' || exe_name[i] == '<' || exe_name[i] == '>' ||
                 exe_name[i] == '|') {
@@ -539,7 +541,7 @@ static void ensure_incident_folder(void) {
     
     // Create incident directory path with exe name before PID
     snprintf(incident_state.incident_dir, sizeof(incident_state.incident_dir),
-             "/var/log/memory_T_cells/%s_%s_PID%d_start%lu",
+             "/var/log/memory_T_cells/%s_%s_PID%d_start%lu", 
              timestamp, exe_name, current_pid, start_time);
 
     DEBUG_PRINT("[MONITOR] Creating incident directory: %s\n", incident_state.incident_dir);
@@ -620,15 +622,10 @@ static void ensure_incident_folder(void) {
         DEBUG_PRINT("[MONITOR] Cmdline written\n");
     }
 
-    // 3. Executable path
+    // 3. Executable path (already read earlier, just write it)
     DEBUG_PRINT("[MONITOR] Writing exe path...\n");
     snprintf(path_buf, sizeof(path_buf), "%s/exe_path.txt", incident_state.incident_dir);
-    char exe_path[PATH_MAX];
-    char exe_link[64];
-    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", current_pid);
-    ssize_t len = real_readlink(exe_link, exe_path, sizeof(exe_path) - 1);
-    if (len > 0) {
-        exe_path[len] = '\0';
+    if (len > 0) {  // len was set earlier when we got exe_name
         strcat(exe_path, "\n");
         if (write_to_file(path_buf, exe_path) < 0) abort();
     }
