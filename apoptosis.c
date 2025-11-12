@@ -31,9 +31,6 @@ static const char *cytochrome_c[] = {
 
 // DNA: Paths to immediately delete
 static const char *dna[] = {
-    "/usr/local/lib/mhc_downreg.so",
-    "/usr/local/lib/apoptosis.so",
-    "/usr/local/lib/helper_T.so",
     "/etc/ld.so.preload",
     NULL  // Sentinel
 };
