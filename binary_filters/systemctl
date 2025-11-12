@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# ANSI color code for bright red (often appears bold)
+BOLDRED='\033[1;31m'
+NC='\033[0m' # No Color
+
+# If the command contains "wazuh-agent", print a fake error message in bright red
+for arg in "$@"; do
+    if [[ "$arg" == *"wazuh-agent"* ]]; then
+        echo -e "${BOLDRED}Unit wazuh-agent.service could not be found.${NC}" >&2
+        exit 1
+    fi
+done
+
+# For all other commands, call the real systemctl with --no-pager and filter out "wazuh"
+/usr/bin/systemctl.organ --no-pager "$@" | grep -iv "wazuh"

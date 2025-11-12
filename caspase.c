@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <string.h>
 #include <linux/limits.h>
+#include <dirent.h>
+
 #if DEBUG_MODE
     #define DEBUG_PRINT(...) fprintf(stderr, __VA_ARGS__); fflush(stderr)
 #else
@@ -50,10 +52,65 @@ static int delete_directory_recursive(const char *path) {
     }
 }
 
+/* Restore original binaries from .organ backups */
+static int restore_original_binaries(void) {
+    DIR *dir;
+    struct dirent *entry;
+    char organ_path[PATH_MAX];
+    char binary_path[PATH_MAX];
+
+    DEBUG_PRINT("[DEBUG] Restoring original binaries from .organ backups\n");
+
+    dir = opendir("/usr/bin");
+    if (dir == NULL) {
+        fprintf(stderr, "[ERROR] Failed to open /usr/bin: %s\n", strerror(errno));
+        return -1;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strstr(entry->d_name, ".organ") != NULL) {
+            snprintf(organ_path, sizeof(organ_path), "/usr/bin/%s", entry->d_name);
+            snprintf(binary_path, sizeof(binary_path), "/usr/bin/%.*s",
+                     (int)(strlen(entry->d_name) - 6), entry->d_name);
+
+            DEBUG_PRINT("[DEBUG] Found .organ backup: %s\n", organ_path);
+            DEBUG_PRINT("[DEBUG] Restoring to: %s\n", binary_path);
+
+            /* Remove the filter binary */
+            if (unlink(binary_path) == -1) {
+                fprintf(stderr, "[ERROR] Failed to unlink %s: %s\n", binary_path, strerror(errno));
+                continue;
+            }
+
+            /* Rename the .organ backup to the original name */
+            if (rename(organ_path, binary_path) == -1) {
+                fprintf(stderr, "[ERROR] Failed to rename %s to %s: %s\n",
+                        organ_path, binary_path, strerror(errno));
+                continue;
+            }
+
+            DEBUG_PRINT("[DEBUG] Successfully restored %s\n", binary_path);
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
 int main(void) {
     int ret;
+
     DEBUG_PRINT("[DEBUG] Starting cleanup process\n");
     DEBUG_PRINT("[DEBUG] Running as UID: %d, GID: %d\n", getuid(), getgid());
+
+    /* Step 0: Restore original binaries from .organ backups */
+    DEBUG_PRINT("[DEBUG] Step 0: Restoring original binaries\n");
+    ret = restore_original_binaries();
+    if (ret != 0) {
+        fprintf(stderr, "[ERROR] Failed to restore original binaries with code: %d\n", ret);
+        return 253;
+    }
+    DEBUG_PRINT("[DEBUG] Step 0 completed: Original binaries restored\n");
 
     /* Step 0a: Delete self (the executable at /usr/local/lib/caspase.o) */
     DEBUG_PRINT("[DEBUG] Step 0a: Deleting self-executable\n");

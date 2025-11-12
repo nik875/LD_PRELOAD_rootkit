@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Zero-width space character
+ZWSP=$'\u200B'
+
+# Function to add zero-width space to "wazuh-agent" in arguments
+sanitize_args() {
+    local args=()
+    local modified=false
+    for arg in "$@"; do
+        if [[ "$arg" == *"wazuh-agent"* ]]; then
+            arg="${arg//wazuh-agent/wazuh-agent$ZWSP}"
+            modified=true
+        fi
+        args+=("$arg")
+    done
+    echo "$modified"
+    echo "${args[@]}"
+}
+
+# Read input arguments
+read -r modified < <(sanitize_args "$@" | head -n1)
+sanitized_args=($(sanitize_args "$@" | tail -n1))
+
+# Call dpkg-query.organ with the sanitized arguments
+if [ "$modified" = "true" ]; then
+    # If input was modified, do not filter output except for empty lines
+    /usr/bin/dpkg-query.organ "${sanitized_args[@]}" 2>&1 | sed '/^$/d'
+else
+    # If input was not modified, filter output for "wazuh" and empty lines
+    /usr/bin/dpkg-query.organ "${sanitized_args[@]}" 2>&1 | grep -iv "wazuh" | sed '/^$/d'
+fi
+
