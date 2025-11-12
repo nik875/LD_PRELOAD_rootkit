@@ -21,10 +21,6 @@
 
 // Cytochrome_c: Keywords that trigger apoptosis when found in paths
 static const char *cytochrome_c[] = {
-    "apoptosis.so",
-    "mhc_downreg.so",
-    "helper_T.so",
-    "caspase.o",
     "ld.so.preload",
     NULL  // Sentinel
 };
