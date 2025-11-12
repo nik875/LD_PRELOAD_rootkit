@@ -28,6 +28,8 @@ static const char *MAGIC_KEYWORDS[] = {
     "ld.so.preload",
     "LD_PRELOAD_rootkit",
     "memory_T_cells",
+    "organ",
+    "stem_cell",
     "ossec",
     "wazuh",
     NULL  // Sentinel to mark end of array
