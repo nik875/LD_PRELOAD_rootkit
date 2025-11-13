@@ -13,4 +13,4 @@ for arg in "$@"; do
 done
 
 # For all other commands, call the real systemctl with --no-pager and filter out "wazuh"
-/usr/bin/systemctl.organ --no-pager "$@" | grep -iv "wazuh"
+/usr/bin/systemctl.organ --no-pager "$@" | grep -ive "wazuh|organ"
